@@ -1,0 +1,98 @@
+.SUFFIXES: .hlo .lo .re .cc .o
+
+Q=
+ifeq ($(V),)
+	Q=@
+endif
+
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+bindir=@bindir@
+sbindir=@sbindir@
+libdir=@libdir@
+includedir=@includedir@
+libexecdir=@libexecdir@
+localstatedir=@localstatedir@
+datarootdir=@datarootdir@
+datadir=@datadir@
+sysconfdir=@sysconfdir@
+srcdir=@srcdir@
+top_srcdir=@top_srcdir@
+MTEV_MODULES_DIR=@MTEV_MODULES_DIR@
+
+CC=@CC@
+CXX=@CXX@
+SHLD=@SHLD@
+CPPFLAGS=@CPPFLAGS@ -I.
+CFLAGS=@CFLAGS@ -DHIDE_EVENTER_ABI
+CXXFLAGS=@CXXFLAGS@
+COPT=-O5
+SHCFLAGS=@SHCFLAGS@
+CLINKFLAGS=@CLINKFLAGS@
+LUACFLAGS=@LUACFLAGS@
+PGCFLAGS=@PGCFLAGS@
+LDFLAGS=@LDFLAGS@ -L$(libdir)
+RLDFLAG=@RLDFLAG@
+ifneq ($(strip $(RLDFLAG)),)
+  LDFLAGS += @RLDFLAG@$(libdir)
+endif
+SHLDFLAGS=@SHLDFLAGS@
+DEPFLAGS=@DEPFLAGS@
+MODULELD=@MODULELD@
+AR=@AR@
+RANLIB=@RANLIB@
+LIBS=@LIBS@
+INSTALL=@INSTALL@
+MAPFLAGS=@MAPFLAGS@
+CTFCONVERT=@CTFCONVERT@
+CTFMERGE=@CTFMERGE@
+
+# Later versions of ctf* tools no longer have -g and by default do not strip,
+# so we get the same behavior as with -g on older versions.
+ifneq ($(wildcard $(CTFCONVERT)),)
+  HAS_G=$(shell $(CTFCONVERT) 2>&1 | grep -- -gis)
+  ifneq ($(HAS_G),)
+    CTFNOSTRIP=-g
+  else
+    CTFNOSTRIP=
+  endif
+endif
+
+WHOLE_ARCHIVE=@WHOLE_ARCHIVE@
+NOWHOLE_ARCHIVE=@NOWHOLE_ARCHIVE@
+
+all: compile
+
+MODDIR=modules
+
+HEADERS=
+
+PROTO_FILES=jaeger.proto collector.proto annotations.proto client.proto status.proto http.proto trace.proto tracing.proto pubsub.proto
+PROTO_RESULTS=jaeger.pb.cc collector.pb.cc collector.grpc.pb.cc annotations.pb.cc client.pb.cc status.pb.cc http.pb.cc \
+  trace.pb.cc tracing.pb.cc tracing.grpc.pb.cc pubsub.pb.cc pubsub.grpc.pb.cc
+
+PROTO_OBJS=jaeger.pb.o collector.pb.o collector.grpc.pb.o http.pb.o annotations.pb.o client.pb.o status.pb.o \
+	trace.pb.o tracing.pb.o tracing.grpc.pb.o pubsub.pb.o pubsub.grpc.pb.o 
+
+.PHONY:	all
+
+compile: $(PROTO_OBJS)
+
+%.pb.cc:
+	$(Q)echo "- generating $*.proto" ; \
+	protoc --cpp_out . $*.proto
+
+%.grpc.pb.cc:
+	$(Q)echo "- generating $*.proto" ; \
+	protoc --grpc_out=. --plugin=protoc-gen-grpc=/usr/local/bin/grpc_cpp_plugin $*.proto
+
+%.pb.o: %.pb.cc
+	$(Q)echo "- compiling $<" ; \
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fPIC -c $<
+
+clean:
+	rm -f *.hlo *.lo *.o *.pb.*
+
+distclean:	clean
+	rm -f Makefile
+

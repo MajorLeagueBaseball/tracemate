@@ -1,0 +1,36 @@
+
+main.o main.lo: main.c  \
+  tm_kafka.h \
+  tm_log.h tm_metric.h \
+  tm_process.h \
+  tm_utils.h tm_version.h
+
+tm_kafka.o tm_kafka.lo: tm_kafka.c tm_kafka.h  \
+  tm_log.h  \
+
+tm_metric.o tm_metric.lo: tm_metric.c tm_metric.h  \
+
+tm_process.o tm_process.lo: tm_process.c tm_process.h \
+  tm_utils.h \
+  tm_kafka.h  tm_log.h tm_metric.h \
+
+tm_process_metric.o tm_process_metric.lo: tm_process_metric.c \
+  tm_log.h \
+  tm_metric.h  \
+  tm_process.h tm_utils.h \
+  tm_kafka.h 
+
+tm_process_span.o tm_process_span.lo: tm_process_span.c \
+  tm_log.h \
+  tm_metric.h  \
+  tm_process.h tm_utils.h \
+  tm_kafka.h 
+
+tm_process_transaction.o tm_process_transaction.lo: tm_process_transaction.c \
+  tm_log.h \
+  tm_metric.h  \
+  tm_process.h tm_utils.h \
+  tm_kafka.h 
+
+tm_utils.o tm_utils.lo: tm_utils.c tm_utils.h  \
+  tm_kafka.h  tm_log.h

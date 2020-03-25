@@ -1,0 +1,41 @@
+# Copyright 2020 Major League Baseball
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+# centos7 base image
+FROM majorleaguebaseball/tracemate-base:59f2877 AS base
+
+# Install the things we need
+RUN yum -y update && \
+  yum clean all && \
+  yum -y install \
+    htop \
+    gdb \
+    graphviz \
+    ghostscript \
+    sysstat
+
+RUN mkdir -p /tracemate
+
+WORKDIR /tracemate
+
+ENV LD_LIBRARY_PATH "/opt/circonus/lib"
+ENV CC "gcc"
+ENV CXX "g++"
+ENV PATH "$PATH:/usr/local/bin:/opt/circonus/bin"
+ENV LDFLAGS "-L/usr/local/lib -L/opt/circonus/lib -L/usr/lib64/"
+ENV CFLAGS "-I/usr/local/include -I/opt/circonus/include -I/usr/include/librdkafka -std=c99"
+ENV CXXFLAGS "-I/usr/local/include -I/opt/circonus/include -I/usr/include/librdkafka -std=c++11"
+
+CMD ["bash"]

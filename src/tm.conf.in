@@ -1,0 +1,197 @@
+<?xml version="1.0" encoding="utf8" standalone="yes"?>
+<!--
+    For most of the below you can see configuration docs at libmtev site: http://circonus-labs.github.io/libmtev/config/
+    That site covers the <eventer>, <logs>, <listeners>, and <modules> sections.  The <kafka>, <teams>, <transaction_db>,
+    <circonus_journal_path>, and <infra_dest_url> sections are specific to tracemate.  See below for more on these.
+-->
+<tm lockfile="/var/run/tm.lock" text_size_limit="512">
+  <eventer>
+    <config>
+      <concurrency>4</concurrency>
+      <default_queue_threads>4</default_queue_threads>
+      <ssl_dhparam1024_file></ssl_dhparam1024_file>
+      <ssl_dhparam2048_file></ssl_dhparam2048_file>
+    </config>
+  </eventer>
+  <logs>
+    <log name="logfile" type="file" path="/tracemate/logs/tm.log" rotate_bytes="10000000" retain_bytes="50000000" timestamps="on" />
+    <log name="internal" type="memory" path="10000,100000"/>
+    <console_output>
+      <outlet name="stderr"/>
+      <outlet name="internal"/>
+      <outlet name="logfile"/>
+      <log name="error"/>
+      <log name="debug/jaeger" disabled="true"/>
+      <log name="debug" disabled="true"/>
+    </console_output>
+  </logs>
+  <listeners>
+    <consoles type="mtev_console">
+      <listener address="/tmp/tm">
+        <config>
+          <line_protocol>telnet</line_protocol>
+        </config>
+      </listener>
+    </consoles>
+    <listener type="http_rest_api" address="*" port="8888" ssl="off">
+      <config>
+        <document_root>/tracemate/tm-web</document_root>
+      </config>
+    </listener>
+  </listeners>
+  <rest>
+    <acl>
+      <rule type="allow" />
+    </acl>
+  </rest>
+  <modules directory="/tracemate/src/modules">
+  </modules>
+  <!--
+
+      The <kafka> block contains instructions for subscribing to kafka to read elastic APM documents (and publish to tracemate_aggregates).
+      Each instance of tracemate can subscribe to any number of topic/partition combinations.  When we deploy this @MLB, we use 20 instances
+      of tracemate, each subscribing to 5 partitions of each elastic APM topic (of which there are 100 partitions).  This gives us
+      the headroom to scale out to a very large footprint of tracemate instances if we have to.
+
+      That looks something like this:
+
+    <broker_list>mlb.broker1:9092,mlb.broker2:9092,...</broker_list>
+    <group_id>tracemate_subscription_instance_0</group_id>
+    <topics>
+      <topic name="elastic_apm_metric" partition="0" batch_size="100" read_delay_ms="3000" />
+      <topic name="elastic_apm_transaction" partition="0" batch_size="2000"/>
+      <topic name="elastic_apm_error" partition="0" batch_size="100"/>
+      <topic name="elastic_apm_span" partition="0" batch_size="2000"/>
+      <topic name="tracemate_aggregates" partition="0" batch_size="100"/>
+
+      <topic name="elastic_apm_metric" partition="1" batch_size="100" read_delay_ms="3000" />
+      <topic name="elastic_apm_transaction" partition="1" batch_size="2000"/>
+      <topic name="elastic_apm_error" partition="1" batch_size="100"/>
+      <topic name="elastic_apm_span" partition="1" batch_size="2000"/>
+      <topic name="tracemate_aggregates" partition="1" batch_size="100"/>
+
+      <topic name="elastic_apm_metric" partition="2" batch_size="100" read_delay_ms="3000" />
+      <topic name="elastic_apm_transaction" partition="2" batch_size="2000"/>
+      <topic name="elastic_apm_error" partition="2" batch_size="100"/>
+      <topic name="elastic_apm_span" partition="2" batch_size="2000"/>
+      <topic name="tracemate_aggregates" partition="2" batch_size="100"/>
+
+      <topic name="elastic_apm_metric" partition="3" batch_size="100" read_delay_ms="3000" />
+      <topic name="elastic_apm_transaction" partition="3" batch_size="2000"/>
+      <topic name="elastic_apm_error" partition="3" batch_size="100"/>
+      <topic name="elastic_apm_span" partition="3" batch_size="2000"/>
+      <topic name="tracemate_aggregates" partition="3" batch_size="100"/>
+
+      <topic name="elastic_apm_metric" partition="4" batch_size="100" read_delay_ms="3000" />
+      <topic name="elastic_apm_transaction" partition="4" batch_size="2000"/>
+      <topic name="elastic_apm_error" partition="4" batch_size="100"/>
+      <topic name="elastic_apm_span" partition="4" batch_size="2000"/>
+      <topic name="tracemate_aggregates" partition="4" batch_size="100"/>
+    </topics>
+
+      This gives us the first 5 partitions of each topic processed on this instance of tracemate.  See the README.md for an explanation
+      of how tracemate operates and requires related documents to exist on related partitions across topics.
+
+      Each <topic> has a "name",  "partition", "batch_size" and optional "read_delay_ms".
+
+      "name" - the name of the kafka topic
+      "partition" - the partition number of that topic to read from
+      "batch_size" - how many messages to fetch at once
+      "read_delay_ms" - for slower topics this can control the trigger to read from kafka.  3000 here means wait 3 seconds before triggering another read on this topic/partition
+  -->
+  <kafka>
+    <broker_list>your.broker1.here:9092,your.broker2.here:9092</broker_list>
+    <group_id>tracemate_subscription</group_id>
+    <topics>
+      <topic name="elastic_apm_metric" partition="0" batch_size="100" read_delay_ms="3000" />
+      <topic name="elastic_apm_transaction" partition="0" batch_size="2000"/>
+      <topic name="elastic_apm_error" partition="0" batch_size="100"/>
+      <topic name="elastic_apm_span" partition="0" batch_size="2000"/>
+      <topic name="tracemate_aggregates" partition="0" batch_size="100"/>
+    </topics>
+  </kafka>
+
+  <!--
+      <teams> controls metric and distributed trace production from tracemate and associates the data to a particular circonus account and
+      jaeger instance.
+
+      Each tracemate instance can support any number of teams for purposes of splitting up the incoming data. At MLB we run ~10 teams.  You may
+      decide to just run one.  The elastic APM service name prefix is used to steer the data to the appropriate team.  Service names in
+      elastic APM config are required to start with the team name listed in this config or the incoming data will be ignored.
+
+      For example, we have a team called "Baseball Data" with the short name: "bdata".  We have a team defined for them, ala (some parts elided):
+
+      <teams>
+        <team name="bdata" metric_submission_url="https://api.circonus.com/..." jaeger_dest_url="bdata-collector-headless.bdata-jaeger:14250">
+          <path_allowlist>
+            <path>/version</path>
+            <path>/user/</path>
+            <path>/teams/</path>
+            <path>/stats/</path>
+            ...    
+          </path_allowlist>
+          <path_rewrites>
+            <regex regex="(\/[0-9]+(\/|$))" replace="/{id}/" />
+            <regex regex="(\/[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}(-ext)?(\/|$))" replace="/{guid}/" />
+            <regex regex="(\/?[\w@]+[ \.-]{1,}[^\/]+)$" replace="/{file}" />
+            ...
+          </path_rewrites>
+        </team
+        ...
+      </teams>
+
+      They then have services named like:
+
+      bdata-statsapi-gaming-prod-gke-us-east4
+      bdata-statsapi-session-prod-gke-us-east4
+      ...
+
+      The prefix of the service name "bdata-" is used to map this incoming data with the <team name="bdata" ...>
+
+      Each <team> can have a <path_allowlist> and <path_rewrites> section.  Please see README.md for an explantion of these
+  -->
+  <teams>
+    <!--
+        "metric_submission_url" is where we send the synthesized metric JSON for this team (Circonus)
+        "jaeger_dest_url" is where we send trace data (gRPC protobuf)
+        "collect_host_level_metrics" controls whether tracemate generates metrics for each host as well as global metrics.
+          This defaults to false if you omit it.
+    -->
+    <team name="myteam" metric_submission_url="https://api.circonus.com/module/httptrap/c10874ff-63a2-4f74-8a2d-0c2e5b87be5b/mys3cr3t" jaeger_dest_url="your-jaeger-collector:14250" collect_host_level_metrics="false">
+      <path_allowlist>
+        <path>/</path>
+      </path_allowlist>
+      <path_rewrites>
+        <regex regex="(\/[0-9]+(\/|$))" replace="/{id}/" />
+        <regex regex="(\/[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}(-ext)?(\/|$))" replace="/{guid}/" />
+        <regex regex="(\/?[\w@]+[ \.-]{1,}[^\/]+)$" replace="/{file}" />
+      </path_rewrites>
+    </team>
+  </teams>
+
+  <!--
+      <service_thresholds> let you configure the time over which a transaction is sent to jaeger for tracing.
+      This should contain a list of <threshold>s where the "name" parameter matches the name in the Elastic APM Agent
+      configuration for "elastic.apm.service_name" and the "threshold_ms" parameter contains the time in milliseconds
+  -->
+  <service_thresholds>
+    <threshold name="myteam-myservice-myenvironment" threshold_ms="1500" />
+    <threshold name="default" threshold_ms="2000" />
+  </service_thresholds>
+
+  <!--
+      <transaction_db> controls the location of the local LMDB database used as a weigh station to apply distributed tracing rules.
+  -->
+  <transaction_db path="/tracemate/data/ts" />
+
+  <!--
+      <circonus_journal_path> controls the location of a local write ahead log for sending metric data to circonus.  Tracemate uses a
+      store and foreward metric design so we don't lose data in the face of network partitions.
+  -->
+  <circonus_journal_path>/tracemate/data/journal</circonus_journal_path>
+
+  <!--
+      <infra_dest_url> contains the Circonus HTTPTrap url to which tracemate will send its own internal metrics for monitoring purposes
+  -->
+  <infra_dest_url>https://api.circonus.com/module/httptrap/c10874ff-63a2-4f74-8a2d-0c2e5b87be5b/mys3cr3t</infra_dest_url>
+</tm>

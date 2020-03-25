@@ -1,0 +1,16 @@
+#!/bin/bash
+PID=$1
+REASON=$2
+
+if [ ! -x /opt/backtrace/bin/ptrace ]; then
+    echo "Process $PID has crashed."
+    echo "Tracemate version: $NOIT_VERSION"
+    echo "No tracer installed."
+    exit
+fi
+
+echo "Invoking tracer against $PID."
+
+/opt/backtrace/bin/ptrace --print --config=/opt/backtrace/etc/ptrace.conf \
+    --kv=trace_reason:$REASON \
+    $PID

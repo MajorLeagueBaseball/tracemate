@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: Service
+metadata:
+{{- if .Values.service.name }}
+  name: {{ .Values.service.name }}
+{{- else }}
+  name: {{ template "name" . }}
+{{- end }}
+  labels:
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    team: {{ template "team" . }}
+{{- if .Values.service.annotations }}
+  annotations:
+{{ toYaml .Values.service.annotations | indent 4 }}
+{{- if .Values.app.ambassador }}
+    getambassador.io/config: |
+      ---
+      apiVersion: ambassador/v0
+      name:  {{ .Values.app.ambassador.name }}
+    {{- if .Values.app.ambassador.mapping }}
+      kind: Mapping
+      prefix: {{ .Values.app.ambassador.mapping.prefix }}
+      service: {{ .Values.service.name }}.{{ .Release.Namespace }}.svc.cluster.local
+    {{- end }}
+    {{- if .Values.app.ambassador.authentication }}
+      kind: AuthService
+      path_prefix: {{ .Values.app.ambassador.authentication.path_prefix }}
+      auth_service: {{ .Values.service.name }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.externalPort }}
+    {{- end }}
+{{- end }}
+{{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+  - port: {{ .Values.service.externalPort }}
+    protocol: TCP
+    name: http
+  selector:
+    app: {{ template "name" . }}

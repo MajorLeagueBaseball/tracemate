@@ -1,0 +1,200 @@
+# Copyright 2020 Major League Baseball
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+.SUFFIXES: .hlo .lo .re .c
+
+Q=
+ifeq ($(V),)
+	Q=@
+endif
+
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+bindir=@bindir@
+sbindir=@sbindir@
+libdir=@libdir@
+includedir=@includedir@
+libexecdir=@libexecdir@
+localstatedir=@localstatedir@
+datarootdir=@datarootdir@
+datadir=@datadir@
+sysconfdir=@sysconfdir@
+srcdir=@srcdir@
+top_srcdir=@top_srcdir@
+MTEV_MODULES_DIR=@MTEV_MODULES_DIR@
+
+CC=@CC@
+CXX=@CXX@
+SHLD=@SHLD@
+CPPFLAGS=@CPPFLAGS@ 
+CFLAGS=@CFLAGS@ -DHIDE_EVENTER_ABI
+CXXFLAGS=@CXXFLAGS@
+COPT=-O5
+SHCFLAGS=@SHCFLAGS@
+CLINKFLAGS=@CLINKFLAGS@
+LUACFLAGS=@LUACFLAGS@
+PGCFLAGS=@PGCFLAGS@
+LDFLAGS=@LDFLAGS@ -L$(libdir)
+RLDFLAG=@RLDFLAG@
+ifneq ($(strip $(RLDFLAG)),)
+  LDFLAGS += @RLDFLAG@$(libdir)
+endif
+SHLDFLAGS=@SHLDFLAGS@
+DEPFLAGS=@DEPFLAGS@
+MODULELD=@MODULELD@
+AR=@AR@
+RANLIB=@RANLIB@
+LIBS=@LIBS@
+INSTALL=@INSTALL@
+MAPFLAGS=@MAPFLAGS@
+CTFCONVERT=@CTFCONVERT@
+CTFMERGE=@CTFMERGE@
+
+# Later versions of ctf* tools no longer have -g and by default do not strip,
+# so we get the same behavior as with -g on older versions.
+ifneq ($(wildcard $(CTFCONVERT)),)
+  HAS_G=$(shell $(CTFCONVERT) 2>&1 | grep -- -gis)
+  ifneq ($(HAS_G),)
+    CTFNOSTRIP=-g
+  else
+    CTFNOSTRIP=
+  endif
+endif
+
+WHOLE_ARCHIVE=@WHOLE_ARCHIVE@
+NOWHOLE_ARCHIVE=@NOWHOLE_ARCHIVE@
+
+TARGETS=tm tm.conf
+
+all: reversion $(TARGETS)
+	$(MAKE) mod-build
+
+MODDIR=modules
+
+HEADERS=
+
+TM_OBJS=main.o tm_circonus.o tm_hooks.o tm_kafka.o tm_process_metric.o tm_process_transaction.o tm_process_error.o tm_process_aggregate.o \
+	tm_process_span.o tm_process.o tm_metric.o tm_utils.o tm_jaeger.o tm_transaction_store.o
+
+FINAL_TM_OBJS=$(TM_OBJS:%.o=tm-objs/%.o)
+
+TM_PROTO_OBJS=proto/jaeger.pb.o proto/collector.pb.o proto/collector.grpc.pb.o
+
+tm-objs/%.o:	%.o
+	$(Q)mkdir -p "`dirname $@`"
+	@echo "- making private $@"
+	$(Q)cp $(@:tm-objs/%.o=%.o) $@
+	$(Q)if test -x "$(CTFCONVERT)" ; then \
+		echo "- making CTF ($@)" ; \
+		$(CTFCONVERT) $(CTFNOSTRIP) -i -l @VERSION@ $@ ; \
+	fi
+
+.PHONY:	reversion all
+
+reversion:
+	$(Q)$(top_srcdir)/buildtools/mkversion.sh tm_version.h
+	(cd proto && $(MAKE))
+
+tm_version.h:
+	$(Q)$(top_srcdir)/buildtools/mkversion.sh tm_version.h
+
+tm.env:	tm_version.h tm_config.h
+	awk '/^#define[ 	]+TM_BRANCH/{print $$2"="$$3;}' < tm_version.h > $@
+	cat tm_version.h | tr '[".]' ' ' | awk '/^#define[ 	]+TM_VERSION/{print $$2"=\""$$3"\""; print $$2"_TSTAMP=\""$$4"\"";}' >> $@
+	awk '/^#define[ 	]+TM_UNAME_[^V]/{print "BUILD_"$$2"="$$3;}' < tm_config.h >> $@
+
+tm: $(FINAL_TM_OBJS) modules
+	@echo "- linking $@"
+	$(Q)$(CC) $(CLINKFLAGS) -o $@ $(FINAL_TM_OBJS) $(TM_PROTO_OBJS) \
+		$(LDFLAGS) \
+		$(MAPFLAGS) \
+		$(LIBS) -L. -lmtev
+	$(Q)if test -x "$(CTFMERGE)" ; then \
+		$(CTFMERGE) $(CTFNOSTRIP) -l @VERSION@ -o $@ $(FINAL_TM_OBJS) $(TM_PROTO_OBJS); \
+	fi
+
+.c.lo:
+	$(Q)if [ "`dirname $@`" != "." ] ; then \
+		(cd "`dirname $@`" && $(MAKE) "`basename $@`") ; \
+	else \
+		echo "- compiling $<" ; \
+	  $(CC) $(CPPFLAGS) $(SHCFLAGS) -c $< -o $@ ; \
+	fi
+
+.c.hlo:
+	$(Q)if [ "`dirname $@`" != "." ] ; then \
+		(cd "`dirname $@`" && $(MAKE) "`basename $@`") ; \
+	else \
+		echo "- compiling $<" ; \
+	  $(CC) $(CPPFLAGS) $(COPT) $(SHCFLAGS) -c $< -o $@ ; \
+	fi
+
+.c.o:
+	$(Q)if [ "`dirname $@`" != "." ] ; then \
+		(cd "`dirname $@`" && $(MAKE) "`basename $@`") ; \
+	else \
+		echo "- compiling $<" ; \
+		$(CC) $(CPPFLAGS) $(CFLAGS) -c $< ; \
+	fi
+
+.cpp.o:
+	$(Q)if [ "`dirname $@`" != "." ] ; then \
+		(cd "`dirname $@`" && $(MAKE) "`basename $@`") ; \
+	else \
+		echo "- compiling $<" ; \
+		$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< ; \
+	fi
+
+tm.conf:	tm.conf.in Makefile
+	$(Q)sed -e "s^%sysconfdir%^$(sysconfdir)^g;" \
+		-e "s^%datarootdir%^src^g;" \
+		-e "s^%PKIPREFIX%^$${PKIPREFIX}^g;" < \
+		tm.conf.in > \
+		tm.conf
+
+install-dirs:
+	$(top_srcdir)/buildtools/mkinstalldirs $(DESTDIR)$(bindir)
+	$(top_srcdir)/buildtools/mkinstalldirs $(DESTDIR)$(sbindir)
+	$(top_srcdir)/buildtools/mkinstalldirs $(DESTDIR)$(sysconfdir)
+
+install-tm:	install-dirs reversion tm tm.conf 
+	$(top_srcdir)/buildtools/mkinstalldirs $(DESTDIR)$(datadir)/tm-web
+	$(INSTALL) -m 0755 tm $(DESTDIR)$(sbindir)/tm
+	$(INSTALL) -m 0644 tm.conf $(DESTDIR)$(sysconfdir)/tm.conf.sample
+	(cd tm-web && tar cf - .) | (cd $(DESTDIR)$(datadir)/tm-web && tar xf -)
+
+install:	install-dirs install-tm
+
+mod-build:
+	@echo "Making modules"
+	$(Q)(find $(MODDIR) -mindepth 2 -name Makefile | while read mkfile; do cd `dirname $$mkfile` && $(MAKE); done)
+
+clean:
+	rm -f *.hlo *.lo *.o $(TARGETS)
+	rm -rf tm-objs
+	(cd proto && $(MAKE) clean)
+	(find $(MODDIR) -mindepth 2 -name Makefile | while read mkfile; do cd `dirname $$mkfile` && $(MAKE) clean; done)
+
+Makefile.dep:
+	$(CC) -I. $(CPPFLAGS) $(CFLAGS) $(DEPFLAGS) *.c > Makefile.dep
+	$(top_srcdir)/buildtools/culldeps.sh Makefile.dep
+
+include Makefile.dep
+
+distclean:	clean
+	rm -f Makefile tm_config.h
+	(cd proto && $(MAKE) distclean)
+
+

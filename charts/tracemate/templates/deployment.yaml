@@ -1,0 +1,79 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: {{ template "name" . }}
+  labels:
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    team: {{ template "team" . }}
+  annotations:
+{{ toYaml .Values.app.contacts | indent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  minReadySeconds: 30
+{{- if .Values.strategy }}
+{{ toYaml .Values.strategy | indent 2 }}
+{{- end }}
+  template:
+    metadata:
+      labels:
+        app: {{ template "name" . }}
+        team: {{ template "team" . }}
+      annotations:
+        mlb/team: {{ .Values.app.team }}
+{{ toYaml .Values.app.contacts | indent 8 }}
+{{- if .Values.podAnnotations }}
+{{ toYaml .Values.podAnnotations | indent 8 }}
+{{- end }}
+    spec:
+      nodeSelector:
+        beta.kubernetes.io/instance-type: n1-standard-8
+      volumes:
+        - name: {{ .Chart.Name }}-config-volume
+          configMap:
+            name: {{ template "name" . }}-config
+        - name: data
+        {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.claimName }}
+        {{- else }}
+          emptyDir: {}
+        {{- end }}
+      containers:
+      - name: {{ .Chart.Name }}
+        {{- if .Values.app }}{{- if .Values.app.config }}
+        env:
+        {{- range $key, $val := .Values.app.config.envKv }}
+        - name: {{ $key }}
+          value:  "{{ $val }}"
+        {{- end }}
+        {{- end }}{{- end }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        volumeMounts:
+          - name: {{ .Chart.Name }}-config-volume
+            mountPath: /tracemate/conf
+          - name: data
+            mountPath: /tracemate/data
+        ports:
+        - containerPort: {{ .Values.service.internalPort }}
+        livenessProbe:
+          httpGet:
+            path: {{ .Values.probePath }}
+            port: {{ .Values.service.internalPort }}
+          initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+          successThreshold: {{ .Values.livenessProbe.successThreshold }}
+          timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+        readinessProbe:
+          httpGet:
+            path: {{ .Values.probePath }}
+            port: {{ .Values.service.internalPort }}
+          periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+          successThreshold: {{ .Values.readinessProbe.successThreshold }}
+          timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
+        securityContext:
+          capabilities:
+            add: ["SYS_PTRACE"]
+        resources:
+{{ toYaml .Values.resources | indent 12 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
