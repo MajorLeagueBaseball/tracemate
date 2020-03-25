@@ -27,13 +27,13 @@ resource "circonus_dashboard" "service_dash" {
       <p>All latency times are in milliseconds</p>
       <ul>
         <li>
-          <a target="_blank" href="http://${var.team_name}.jaeger.shared.mlbinfra.net/search?limit=200&lookback=2h&service=${each.key}">Jaeger search the trailing 2 hours (limit 200)</a>
+          <a target="_blank" href="http://${var.team_name}.${var.jaeger_base_url}/search?limit=200&lookback=2h&service=${each.key}">Jaeger search the trailing 2 hours (limit 200)</a>
         </li>
         <li>
-          <a target="_blank" href="http://${var.team_name}.jaeger.shared.mlbinfra.net/search?limit=200&lookback=2d&service=${each.key}">Jaeger search the trailing 2 days (limit 200)</a>
+          <a target="_blank" href="http://${var.team_name}.${var.jaeger_base_url}/search?limit=200&lookback=2d&service=${each.key}">Jaeger search the trailing 2 days (limit 200)</a>
         </li>
         <li>
-          <a target="_blank" href="http://${var.team_name}.jaeger.shared.mlbinfra.net/search?limit=200&lookback=2w&service=${each.key}">Jaeger search the trailing 2 weeks (limit 200)</a>
+          <a target="_blank" href="http://${var.team_name}.${var.jaeger_base_url}/search?limit=200&lookback=2w&service=${each.key}">Jaeger search the trailing 2 weeks (limit 200)</a>
         </li>
       </ul>
 EOF
