@@ -497,6 +497,14 @@ have a single Circonus account this could be the same HTTPTrap you send your
 `<team>` metrics to.
 
 
+### Modules
+
+Like all `libmtev` apps, tracemate has the ability to load
+[modules](http://circonus-labs.github.io/libmtev/config/modules.html) which can
+perform specific operations that aren't part of the core tracemate
+functionality. To see what hooks are exposed for this purpose, you can look in
+`src/tm_hooks.h`. More hooks will be added over time.
+
 ## Metrics
 
 The generated metrics follow a naming pattern:
