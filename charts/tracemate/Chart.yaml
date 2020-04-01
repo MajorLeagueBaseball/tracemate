@@ -2,4 +2,4 @@ apiVersion: v1
 description: A Helm chart for Tracemate under k8s
 icon: file://tracemate.png
 name: tracemate
-version: 0.4.35
+version: 0.5.0

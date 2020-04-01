@@ -95,6 +95,7 @@ typedef struct team_data {
   uint64_t trace_threshold_us;
   mtev_boolean collect_host_level_metrics;
   mtev_boolean always_send_errors;
+  mtev_boolean rollup_high_cardinality;
   uint64_t histogram_threshold_us;
   uint64_t transaction_lookback_secs;
   uint64_t apdex_satisfied_threshold_ms;

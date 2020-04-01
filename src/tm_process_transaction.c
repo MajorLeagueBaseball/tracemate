@@ -86,6 +86,14 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
     }
   }
 
+  /* certain high cardinality metrics can contain a special tag that prevents them from being rolled up
+   * for longer term storage
+   */
+  const char *rollup = "";
+  if (td->rollup_high_cardinality == mtev_false) {
+    rollup = ",__rollup:false";
+  }
+
   //stackdriver_transaction(message, "cloudtrace.googleapis.com:443");
 
   /* process this transaction for histogramming, we *always* histogram at the parent transaction level,
@@ -207,8 +215,8 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
     uint64_t agg_timestamp = ceil_timestamp(timestamp);
 
     /* average latency for this service and URL */
-    snprintf(metric_name, sizeof(metric_name) - 1, "transaction - latency - %s|ST[%s,method:%s]",
-             clean_path, agg_tag_string, mtev_json_object_get_string(method));
+    snprintf(metric_name, sizeof(metric_name) - 1, "transaction - latency - %s|ST[%s,method:%s%s]",
+             clean_path, agg_tag_string, mtev_json_object_get_string(method), rollup);
 
     update_histogram(td, team_metrics, metric_name, true, duration_us, agg_timestamp);
 
@@ -220,13 +228,13 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
 
     if (stat_code >= 400 && stat_code < 500) {
       /* client error count for the service and URL */
-      snprintf(metric_name, sizeof(metric_name) - 1, "transaction - client_error_count - %s|ST[%s,method:%s]",
-               clean_path, agg_tag_string, mtev_json_object_get_string(method));
+      snprintf(metric_name, sizeof(metric_name) - 1, "transaction - client_error_count - %s|ST[%s,method:%s%s]",
+               clean_path, agg_tag_string, mtev_json_object_get_string(method), rollup);
 
       update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
-      snprintf(metric_name, sizeof(metric_name) - 1, "transaction - error_count - %s|ST[%s,method:%s]",
-               clean_path, agg_tag_string, mtev_json_object_get_string(method));
+      snprintf(metric_name, sizeof(metric_name) - 1, "transaction - error_count - %s|ST[%s,method:%s%s]",
+               clean_path, agg_tag_string, mtev_json_object_get_string(method), rollup);
 
       update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
@@ -244,13 +252,13 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
     if (stat_code >= 500) {
 
       /* client error count for the service and URL */
-      snprintf(metric_name, sizeof(metric_name) - 1, "transaction - server_error_count - %s|ST[%s,method:%s]",
-               clean_path, agg_tag_string, mtev_json_object_get_string(method));
+      snprintf(metric_name, sizeof(metric_name) - 1, "transaction - server_error_count - %s|ST[%s,method:%s%s]",
+               clean_path, agg_tag_string, mtev_json_object_get_string(method), rollup);
 
       update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
-      snprintf(metric_name, sizeof(metric_name) - 1, "transaction - error_count - %s|ST[%s,method:%s]",
-               clean_path, agg_tag_string, mtev_json_object_get_string(method));
+      snprintf(metric_name, sizeof(metric_name) - 1, "transaction - error_count - %s|ST[%s,method:%s%s]",
+               clean_path, agg_tag_string, mtev_json_object_get_string(method),rollup);
 
       update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
@@ -266,8 +274,8 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
     }
 
     /* request count for the service and URL */
-    snprintf(metric_name, sizeof(metric_name) - 1, "transaction - request_count - %s|ST[%s,method:%s]",
-             clean_path, agg_tag_string, mtev_json_object_get_string(method));
+    snprintf(metric_name, sizeof(metric_name) - 1, "transaction - request_count - %s|ST[%s,method:%s%s]",
+             clean_path, agg_tag_string, mtev_json_object_get_string(method),rollup);
     update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
     snprintf(metric_name, sizeof(metric_name) - 1, "transaction - request_count - all|ST[%s,method:%s]",
@@ -276,14 +284,14 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
 
     /* while we are here, we generate a text metric for the http response code from this transaction */
     if (td->collect_host_level_metrics) {
-      snprintf(metric_name, sizeof(metric_name) - 1, "transaction - status_code - %s|ST[%s,method:%s]",
-               clean_path, tag_string, mtev_json_object_get_string(method));
+      snprintf(metric_name, sizeof(metric_name) - 1, "transaction - status_code - %s|ST[%s,method:%s%s]",
+               clean_path, tag_string, mtev_json_object_get_string(method),rollup);
       snprintf(sc, sizeof(sc), "%d", stat_code);
       update_text(td, team_metrics, metric_name, sc, timestamp);
 
       /* reuse metric_name for the latency metric name of this metric is the method and the clean_path */
-      snprintf(metric_name, sizeof(metric_name) - 1, "transaction - latency - %s|ST[%s,method:%s]",
-               clean_path, tag_string, mtev_json_object_get_string(method));
+      snprintf(metric_name, sizeof(metric_name) - 1, "transaction - latency - %s|ST[%s,method:%s%s]",
+               clean_path, tag_string, mtev_json_object_get_string(method),rollup);
 
       /* round it down to the minute */
       timestamp = ceil_timestamp(timestamp);
@@ -323,8 +331,8 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
       uint64_t agg_timestamp = ceil_timestamp(timestamp);
 
       /* average latency for this service and URL */
-      snprintf(metric_name, sizeof(metric_name) - 1, "transaction - latency - %s|ST[%s,method:GET]",
-               clean_path, agg_tag_string);
+      snprintf(metric_name, sizeof(metric_name) - 1, "transaction - latency - %s|ST[%s,method:GET%s]",
+               clean_path, agg_tag_string,rollup);
 
       update_histogram(td, team_metrics, metric_name, true, duration_us, agg_timestamp);
 
@@ -335,8 +343,8 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
       update_histogram(td, team_metrics, metric_name, true, duration_us, agg_timestamp);
 
       /* request count for the service and URL */
-      snprintf(metric_name, sizeof(metric_name) - 1, "transaction - request_count - %s|ST[%s,method:GET]",
-               clean_path, agg_tag_string);
+      snprintf(metric_name, sizeof(metric_name) - 1, "transaction - request_count - %s|ST[%s,method:GET%s]",
+               clean_path, agg_tag_string, rollup);
       update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
       snprintf(metric_name, sizeof(metric_name) - 1, "transaction - request_count - all|ST[%s,method:GET]",

@@ -402,7 +402,15 @@ Each `<team>` definition has 3 important member fields:
   produced but can help illuminate differences in performance among different
   hosts. This is likely less useful in a k8s environment where pods are jumping
   around so we leave this off @MLB.
-
+* `rollup_high_cardinality` - Defaults to "false". Certain metrics can be
+  very high cardinality.  For example: `transaction - latency - /level1/level2/...`
+  where you have a `path_rewrites` set to only allow 2 levels of URL pathing.
+  This can still mean many millions of time series depending on the service.
+  To combat this explosion of time series, Circonus offers a special tag
+  which will keep the metric for 4 weeks but then drop it for longer term
+  storage (won't roll it up).  Setting this to true for a team will
+  omit this special tag causing Circonus to rollup everything.
+  
 Each team can have a `path_allowlist` and a `path_rewrites` list to control
 which URLs you pay attention to in your services. To allow all paths, simply
 create a single path of slash `/` as in the example above. If you don't specify

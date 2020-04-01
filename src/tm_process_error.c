@@ -137,14 +137,22 @@ process_error_message_with_root(mtev_json_object *message, tm_transaction_store_
     url = mtev_json_object_get_string(mtev_json_object_object_get(root_span->data, "url"));
   }
 
+  /* certain high cardinality metrics can contain a special tag that prevents them from being rolled up
+   * for longer term storage
+   */
+  const char *rollup = "";
+  if (td->rollup_high_cardinality == mtev_false) {
+    rollup = ",__rollup:false";
+  }
+
   if (td->collect_host_level_metrics) {
-    snprintf(metric_name, sizeof(metric_name) - 1, "transaction - apm_error_count|ST[%s,url:%s]",
-             url, tag_string);
+    snprintf(metric_name, sizeof(metric_name) - 1, "transaction - apm_error_count|ST[%s,url:%s%s]",
+             tag_string, url, rollup);
     update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
   }
 
-  snprintf(metric_name, sizeof(metric_name) - 1, "transaction - apm_error_count|ST[%s,url:%s]",
-           url, agg_tag_string);
+  snprintf(metric_name, sizeof(metric_name) - 1, "transaction - apm_error_count|ST[%s,url:%s%s]",
+           agg_tag_string, url, rollup);
   update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
   mtev_json_object *trace_this = mtev_json_object_object_get(message, "trace_this");

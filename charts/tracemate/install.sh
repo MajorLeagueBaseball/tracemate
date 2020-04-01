@@ -34,6 +34,6 @@ for ((i=0; i < $LOOP_COUNT; i++)); do
          --set persistence.claimName=tracemate-${i}-databig \
          --set app.instance=${i} \
          --set nameOverride=tracemate-${i} \
-         --version=0.4.35
+         --version=0.5.0
 
 done

@@ -488,11 +488,13 @@ tm_init()
     team_data_t *td = (team_data_t *)calloc(1, sizeof(team_data_t));
     /* by default we don't want to collect ip/host cardinality metrics */
     td->collect_host_level_metrics = mtev_false;
+    td->rollup_high_cardinality = mtev_false;
 
     mtev_conf_get_string(teams[i], "@name", &name);
     mtev_conf_get_string(teams[i], "@metric_submission_url", &td->metric_submission_url);
     mtev_conf_get_string(teams[i], "@jaeger_dest_url", &td->jaeger_dest_url);
     mtev_conf_get_boolean(teams[i], "@collect_host_level_metrics", &td->collect_host_level_metrics);
+    mtev_conf_get_boolean(teams[i], "@rollup_high_cardinality", &td->rollup_high_cardinality);
 
     /* allow url list */
     td->allowlist_count = 0;

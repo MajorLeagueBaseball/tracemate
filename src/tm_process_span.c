@@ -201,6 +201,15 @@ process_span_message_with_root(mtev_json_object *message, tm_transaction_store_e
   mtev_json_object *context = mtev_json_object_object_get(message, "context");
   const char *t = mtev_json_object_get_string(type);
   mtev_json_object *db = mtev_json_object_object_get(context, "db");
+
+  /* certain high cardinality metrics can contain a special tag that prevents them from being rolled up
+   * for longer term storage
+   */
+  const char *rollup = "";
+  if (td->rollup_high_cardinality == mtev_false) {
+    rollup = ",__rollup:false";
+  }
+
   if (db) {
     const char *operation = mtev_json_object_get_string(mtev_json_object_object_get(span, "name"));
     const char *stmt = mtev_json_object_get_string(mtev_json_object_object_get(db, "statement"));
@@ -213,13 +222,13 @@ process_span_message_with_root(mtev_json_object *message, tm_transaction_store_e
     timestamp = ceil_timestamp(timestamp);
 
     /* aggregate for URL */
-    snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - %s|ST[%s]",
-             url, agg_tag_string);
+    snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - %s|ST[%s%s]",
+             url, agg_tag_string, rollup);
     update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
 
     /* aggregate for statement */
-    snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - %s %s %s|ST[%s]",
-             t, table, operation, agg_tag_string);
+    snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - %s %s %s|ST[%s%s]",
+             t, table, operation, agg_tag_string, rollup);
     update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
 
     /* aggregate for all URLs */
@@ -234,34 +243,34 @@ process_span_message_with_root(mtev_json_object *message, tm_transaction_store_e
 
     /* host and statement specific */
     if (td->collect_host_level_metrics) {
-      snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - %s %s %s|ST[%s]",
-               t, table, operation, tag_string);
+      snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - %s %s %s|ST[%s%s]",
+               t, table, operation, tag_string, rollup);
       update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
     }
 
 
     /* host and url specific */
     if (td->collect_host_level_metrics) {
-      snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - %s|ST[%s]",
-               url, tag_string);
+      snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - %s|ST[%s%s]",
+               url, tag_string, rollup);
       update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
     }
 
     /* host and statement specific */
     if (td->collect_host_level_metrics) {
-      snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - %s %s %s|ST[%s]",
-               t, table, operation, tag_string);
+      snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - %s %s %s|ST[%s%s]",
+               t, table, operation, tag_string, rollup);
       update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
     }
 
     /* counts */
     if (td->collect_host_level_metrics) {
-      snprintf(metric_name, sizeof(metric_name) - 1, "db - stmt_count - %s %s %s|ST[%s]",
-               t, table, operation, tag_string);
+      snprintf(metric_name, sizeof(metric_name) - 1, "db - stmt_count - %s %s %s|ST[%s%s]",
+               t, table, operation, tag_string, rollup);
       update_counter(td, team_metrics, metric_name, true, 1, timestamp);
 
-      snprintf(metric_name, sizeof(metric_name) - 1, "db - stmt_count - %s|ST[%s]",
-               url, tag_string);
+      snprintf(metric_name, sizeof(metric_name) - 1, "db - stmt_count - %s|ST[%s%s]",
+               url, tag_string, rollup);
       update_counter(td, team_metrics, metric_name, true, 1, timestamp);
     }
 
@@ -286,13 +295,13 @@ process_span_message_with_root(mtev_json_object *message, tm_transaction_store_e
     timestamp = ceil_timestamp(timestamp);
 
     /* aggregate for URL */
-    snprintf(metric_name, sizeof(metric_name) - 1, "external - latency - %s|ST[%s]",
-             generic_url, agg_tag_string);
+    snprintf(metric_name, sizeof(metric_name) - 1, "external - latency - %s|ST[%s%s]",
+             generic_url, agg_tag_string, rollup);
     update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
 
     /* aggregate for statement */
-    snprintf(metric_name, sizeof(metric_name) - 1, "external - latency - %s|ST[%s]",
-             external_name, agg_tag_string);
+    snprintf(metric_name, sizeof(metric_name) - 1, "external - latency - %s|ST[%s%s]",
+             external_name, agg_tag_string, rollup);
     update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
 
     /* aggregate for all URLs */
@@ -302,22 +311,22 @@ process_span_message_with_root(mtev_json_object *message, tm_transaction_store_e
 
     if (td->collect_host_level_metrics) {
       /* host and statement specific */
-      snprintf(metric_name, sizeof(metric_name) - 1, "external - latency - %s|ST[%s]",
-               external_name, tag_string);
+      snprintf(metric_name, sizeof(metric_name) - 1, "external - latency - %s|ST[%s%s]",
+               external_name, tag_string, rollup);
       update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
 
       /* host and url specific */
-      snprintf(metric_name, sizeof(metric_name) - 1, "external - latency - %s|ST[%s]",
-               generic_url, tag_string);
+      snprintf(metric_name, sizeof(metric_name) - 1, "external - latency - %s|ST[%s%s]",
+               generic_url, tag_string, rollup);
       update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
 
       /* counts */
-      snprintf(metric_name, sizeof(metric_name) - 1, "external - call_count - %s|ST[%s]",
-               external_name, tag_string);
+      snprintf(metric_name, sizeof(metric_name) - 1, "external - call_count - %s|ST[%s%s]",
+               external_name, tag_string, rollup);
       update_counter(td, team_metrics, metric_name, true, 1, timestamp);
 
-      snprintf(metric_name, sizeof(metric_name) - 1, "external - call_count - %s|ST[%s]",
-               generic_url, tag_string);
+      snprintf(metric_name, sizeof(metric_name) - 1, "external - call_count - %s|ST[%s%s]",
+               generic_url, tag_string, rollup);
       update_counter(td, team_metrics, metric_name, true, 1, timestamp);
     }
 
