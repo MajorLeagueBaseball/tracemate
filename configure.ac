@@ -209,7 +209,7 @@ AC_SUBST(MODLIBS)
 AC_SUBST(CXXFLAGS)
 
 CFLAGS="$CFLAGS -Wall -Werror"
-LIBS="-lstdc++ -lprotobuf -llmdb -lgrpc++ -lgrpc++_reflection -lgrpc -lgpr -lcares -laddress_sorting -labsl_strings -labsl_base -labsl_throw_delegate $LIBS -ldl"
+LIBS="-lstdc++ -lprotobuf -llmdb -lgrpc++ -lgrpc++_reflection -lgrpc -lgpr -lcares -laddress_sorting -labsl_strings -labsl_base -labsl_throw_delegate -labsl_str_format_internal -labsl_bad_optional_access -labsl_raw_logging_internal -labsl_int128 $LIBS -ldl"
 
 AC_OUTPUT([
 Makefile

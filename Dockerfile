@@ -13,7 +13,7 @@
 # limitations under the License.
 
 # centos7 base image with required compilation tools and libraries
-FROM majorleaguebaseball/tracemate-base:59f2877 AS base
+FROM majorleaguebaseball/tracemate-base:3477f29 AS base
 
 RUN mkdir -p /tracemate
 
@@ -21,11 +21,14 @@ ADD . /tracemate
 
 WORKDIR /tracemate
 
+ARG EXTRA_CFLAGS=""
+ENV EXTRA_CFLAGS=$EXTRA_CFLAGS
+
 RUN autoreconf -i && \
   PATH=$PATH:/usr/local/bin:/opt/circonus/bin:/usr/bin \
   LDFLAGS="-L/opt/circonus/lib -L/usr/lib64/ -L/usr/local/lib" \
-  CFLAGS="-I/usr/local/lib -I/opt/circonus/include -I/usr/include/librdkafka -O2 -ggdb" \
-  CXXFLAGS="-I/usr/local/lib -I/opt/circonus/include -I/usr/include/librdkafka -O2 -ggdb -std=c++11" \
+  CFLAGS="-I/usr/local/lib -I/opt/circonus/include -I/usr/include/librdkafka -O2 -ggdb $EXTRA_CFLAGS" \
+  CXXFLAGS="-I/usr/local/lib -I/opt/circonus/include -I/usr/include/librdkafka -O2 -ggdb -std=c++11 $EXTRA_CFLAGS" \
   ./configure && \
   make clean && \
   make

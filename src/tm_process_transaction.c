@@ -20,7 +20,6 @@
 #include "tm_hooks.h"
 #include "tm_log.h"
 #include "tm_jaeger.h"
-#include "tm_stackdriver.h"
 #include "tm_metric.h"
 #include "tm_transaction_store.h"
 #include "tm_process.h"

@@ -65,6 +65,7 @@ RUN yum -y update && \
 RUN git clone -b $(curl -L https://grpc.io/release) https://github.com/grpc/grpc && \
     cd grpc && \
     git submodule update --init && \
+    sed -i.bak 's#grpc_tracer_init();#//grpc_tracer_init();#g' /grpc/src/core/lib/surface/init.cc && \
     mkdir -p cmake/build && \
     cd cmake/build && \
     cmake3 \
