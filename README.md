@@ -231,7 +231,7 @@ output.kafka:
      "kafka.server1:9200",
      "kafka.server2:9200"
   ]
-  topic: 'elastic_apm_%%{[processor.event]}'
+  topic: 'elastic_apm_%{[processor.event]}'
 
   # The Kafka event partitioning strategy. Default hashing strategy is `hash`
   # using the `output.kafka.key` setting or randomly distributes events if
