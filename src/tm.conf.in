@@ -108,6 +108,26 @@
       <topic name="elastic_apm_error" partition="0" batch_size="100"/>
       <topic name="elastic_apm_span" partition="0" batch_size="2000"/>
       <topic name="tracemate_aggregates" partition="0" batch_size="100"/>
+      <topic name="elastic_apm_metric" partition="1" batch_size="100" read_delay_ms="3000" />
+      <topic name="elastic_apm_transaction" partition="1" batch_size="2000"/>
+      <topic name="elastic_apm_error" partition="1" batch_size="100"/>
+      <topic name="elastic_apm_span" partition="1" batch_size="2000"/>
+      <topic name="tracemate_aggregates" partition="1" batch_size="100"/>
+      <topic name="elastic_apm_metric" partition="2" batch_size="100" read_delay_ms="3000" />
+      <topic name="elastic_apm_transaction" partition="2" batch_size="2000"/>
+      <topic name="elastic_apm_error" partition="2" batch_size="100"/>
+      <topic name="elastic_apm_span" partition="2" batch_size="2000"/>
+      <topic name="tracemate_aggregates" partition="2" batch_size="100"/>
+      <topic name="elastic_apm_metric" partition="3" batch_size="100" read_delay_ms="3000" />
+      <topic name="elastic_apm_transaction" partition="3" batch_size="2000"/>
+      <topic name="elastic_apm_error" partition="3" batch_size="100"/>
+      <topic name="elastic_apm_span" partition="3" batch_size="2000"/>
+      <topic name="tracemate_aggregates" partition="3" batch_size="100"/>
+      <topic name="elastic_apm_metric" partition="4" batch_size="100" read_delay_ms="3000" />
+      <topic name="elastic_apm_transaction" partition="4" batch_size="2000"/>
+      <topic name="elastic_apm_error" partition="4" batch_size="100"/>
+      <topic name="elastic_apm_span" partition="4" batch_size="2000"/>
+      <topic name="tracemate_aggregates" partition="4" batch_size="100"/>
     </topics>
   </kafka>
 
