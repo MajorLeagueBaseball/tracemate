@@ -394,6 +394,8 @@ see the example `src/tm.conf.in`):
       <topic name="elastic_apm_error" partition="0" batch_size="100"/>
       <topic name="elastic_apm_span" partition="0" batch_size="2000"/>
       <topic name="tracemate_aggregates" partition="0" batch_size="100"/>
+      <topic name="tracemate_urls" partition="0" batch_size="100"/>
+      <topic name="tracemate_regexes" partition="0" batch_size="100"/>
     </topics>
   </kafka>
 ```
