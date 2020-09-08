@@ -294,14 +294,55 @@ headroom in operations to deal with expected (and unexpected growth). Size
 yourself according to your needs.
 
 The kafka cluster will require the topics mentioned in the last section as well
-as a specialized topic: `tracemate_aggregates`. This topic is used to centralize
-aggregate math properly. Once an aggregate key is created for a metric, it is
+as a few specialized topics: `tracemate_aggregates`, `tracemate_urls`, and
+`tracemate_regexes`. These topics are used to centralize aggregate math properly
+and to squash URLs. Once an aggregate key is created for a metric, it is
 republished to the `tracemate_aggregates` topic with the metric name as the key
 so that it will hash to a single partition for aggregation. This ensures that
 the same tracemate instance is always aggregating the same metrics by key all
 the time (it keeps the math coherent).
 
-To re-iterate we need 6 topics:
+Tracemate uses service URL for several metrics (`transaction - latency - <URL>`,
+etc..). This URL is directly derived from the elastic apm reported
+`request.url.pathname`. The first pass of tracemate utilized a set of regular
+expressions that it compared to URL path segments in order to replace known
+patterns like UUIDs or integers with a named replacement like `/foo/bar/1234`
+would become `/foo/bar/{id}`. This didn't scale well when the URLs processed by
+tracemate became less well formed. For example:
+
+`/news/buffalo-bluejays/toronto-blue-jays-move-to-buffalo-for-the-covid-season.html`
+
+Human readable URLs fell down horribly when using a regex approach and it led to
+metric grouping issues.
+
+This code uses a different approach. Tracemate now analyzes every incoming
+URL that it sees (per service) and assigns a cardinality score to each path
+segment tree. When the cardinality eclipses a logarithmically decreasing
+threshold (based on the segment number), the segment is squashed and replaced
+with `{...}`. So the above URL becomes:
+
+`/news/buffalo-bluejays/{...}`
+
+If there are enough news stories to eclipse the cardinality limit.
+
+To accomplish this feat, tracemate makes use of 2 more kafka topics:
+
+1. tracemate_urls
+2. tracemate_regexes
+
+Every URL that tracemate sees is immediately published to `tracemate_urls` with
+the key of the service name so that it gets processed by the owner of that
+partition (this ensures that all URLs for a service get processed by the same
+tracemate instance). When a URL becomes squashed tracemate produces a regular
+expression that is publishes to `tracemate_regexes`. All tracemate instances
+subscribe to `tracemate_regexes` to update their internal URL replacement
+schemes when new regexes are produced.
+
+`tracemate_urls` should likely match the number of partitions you use for
+`elastic_apm_*` topics and `tracemate_regexes` should have 1 partition.
+
+
+To re-iterate we need 8 topics:
 
 * `elastic_apm_error` - holds error documents reported by elastic apm agent.
 * `elastic_apm_metric` - holds metric documents reported by elastic apm agent.
@@ -313,8 +354,17 @@ To re-iterate we need 6 topics:
   apm_agent.
 * `tracemate_aggregates` - holds aggregate documents produced by tracemate
   itself so we produce coherent math.
+* `tracemate_urls` - holds each seen URL per service.
+* `tracemate_regexes` - holds the result of the URL squashing code.
 
-5 of these (all but `onboarding`) **must** have the same number of partitions.
+6 of these (all but `elastic_apm_onboarding` and `tracemate_regexes`) **must**
+have the same number of partitions.  
+
+* `tracemate_regexes` - must have 1 partition with the Kafka setting:
+`cleanup.policy` set to `compact` so that duplicate regexes get compacted away.
+@MLB we also set `delete.retention.ms=300000` and `segment.ms=10000`
+* `elastic_apm_onboarding` - doesn't seem to matter but we use 1 partition here.
+
 
 ### Jaeger
 

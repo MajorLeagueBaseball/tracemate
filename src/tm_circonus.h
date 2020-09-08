@@ -25,6 +25,9 @@
 
 void send_infra_metrics(const char *url, stats_recorder_t *recorder);
 bool journal_output_metrics(mtev_dyn_buffer_t *json, ssize_t count, const char *metric_submission_url);
+bool circonus_curl_get(const char *api_key, mtev_dyn_buffer_t *response, const char *url, const char *search);
+bool circonus_curl_post(const char *api_key, mtev_dyn_buffer_t *response, const char *url, const char *contents);
+
 bool tm_circonus_init(const char *path);
 
 #endif

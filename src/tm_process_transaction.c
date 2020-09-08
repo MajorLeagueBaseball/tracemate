@@ -77,10 +77,26 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
   RETURN_IF_MISSING(service, context, "service");
   RETURN_IF_MISSING(service_name, service, "name");
   char *clean_path = NULL;
+  const char *service_string = NULL;
+  if (service_name) {
+    service_string = mtev_json_object_get_string(service_name);
+  }
+
+  mtev_boolean debug_transaction = mtev_false;
+  /* if (strncmp("bdata-binapi-statcast", service_string, 21) == 0) { */
+  /*   debug_transaction = mtev_true; */
+  /* } */
+
+  if (debug_transaction == mtev_true) {
+    mtevL(tm_error, "TRANSACTION for: %s\n\n%s", service_string, mtev_json_object_to_json_string(message));
+  }
 
   mtev_json_object *processed = mtev_json_object_object_get(message, "tracemate_processed");
   if (processed != NULL) {
     if (mtev_json_object_get_boolean(processed)) {
+      if (debug_transaction == mtev_true) {
+        mtevL(tm_error, "already processed, skipping to jaeger: %s\n", service_string);
+      }
       goto process_jaeger;
     }
   }
@@ -100,6 +116,12 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
   const char *type = mtev_json_object_get_string(mtev_json_object_object_get(trans, "type"));
 
   if (strcmp(type, "message_read") == 0 || strcmp(type, "messaging") == 0) {
+
+    service_info_t *sit = NULL;
+    if (mtev_hash_retrieve(&td->service_data, service_string, strlen(service_string), (void **)&sit)) {
+      sit->service_type = SERVICE_TYPE_MESSAGE;
+    }
+
     /* build aggregate metrics, this replaces host specific info with `all` */
     uint64_t agg_timestamp = ceil_timestamp(timestamp);
     const char *name = mtev_json_object_get_string(mtev_json_object_object_get(trans, "name"));
@@ -133,6 +155,12 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
     }
   }
   else if (strcmp(type, "scheduled") == 0) {
+
+    service_info_t *sit = NULL;
+    if (mtev_hash_retrieve(&td->service_data, service_string, strlen(service_string), (void **)&sit)) {
+      sit->service_type = SERVICE_TYPE_SCHEDULED;
+    }
+
     /* build aggregate metrics, this replaces host specific info with `all` */
     uint64_t agg_timestamp = ceil_timestamp(timestamp);
     const char *name = mtev_json_object_get_string(mtev_json_object_object_get(trans, "name"));
@@ -166,6 +194,12 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
     }
   }
   else if (strcmp(type, "request") == 0) {
+
+    service_info_t *sit = NULL;
+    if (mtev_hash_retrieve(&td->service_data, service_string, strlen(service_string), (void **)&sit)) {
+      sit->service_type = SERVICE_TYPE_TRANSACTIONAL;
+    }
+
     /*
      * request means that there is a context.request object
      * We can get the response code from the context.response object as well as the path and synthesize a metric out of it
@@ -179,7 +213,10 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
     mtev_json_object *req = mtev_json_object_object_get(context, "request");
     mtev_json_object *resp = mtev_json_object_object_get(context, "response");
     if (req == NULL || resp == NULL) {
-      mtevL(tm_error, "Transaction missing request or response object\n");
+      mtevL(tm_error, "Transaction missing request or response object: %s:%s\n", service_string, trace_id);
+      if (debug_transaction == mtev_true) {
+        mtevL(tm_error, "malformed, missing request or response: %s\n", service_string);
+      }
       stats_add64(stats->messages_errored, 1);
       return false;
     }
@@ -195,6 +232,9 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
     }
 
     if (!is_path_ok(mtev_json_object_get_string(path), td)) {
+      if (debug_transaction == mtev_true) {
+        mtevL(tm_error, "malformed, path not allowed: %s, %s\n", service_string, mtev_json_object_get_string(path));
+      }
       stats_add64(stats->messages_filtered, 1);
       return false;
     }
@@ -202,13 +242,16 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
     int stat_code = mtev_json_object_get_int(status_code);
     if (stat_code == 404) {
 
+      if (debug_transaction == mtev_true) {
+        mtevL(tm_error, "malformed, 404, not tracking: %s, %s\n", service_string, mtev_json_object_get_string(path));
+      }
       /* Don't bother tracking stats on URLs that don't exist */
       stats_add64(stats->messages_filtered, 1);
       return false;
     }
 
     /* remove any GUIDS or integers from the path to genericize it */
-    clean_path = genericize_path(mtev_json_object_get_string(path), td);
+    clean_path = genericize_path(service_string, mtev_json_object_get_string(path), td);
 
     /* build aggregate metrics, this replaces host specific info with `all` */
     uint64_t agg_timestamp = ceil_timestamp(timestamp);
@@ -297,6 +340,12 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
       update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
     }
   } else if (strcmp(type, "page-load") == 0) {
+
+    service_info_t *sit = NULL;
+    if (mtev_hash_retrieve(&td->service_data, service_string, strlen(service_string), (void **)&sit)) {
+      sit->service_type = SERVICE_TYPE_TRANSACTIONAL;
+    }
+
     /*
      * "page-load"" means that there is a transaction.marks object which tracks http page-load timings.
      *
@@ -316,7 +365,7 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
       if (prot_sep) {
         const char *p = strstr(prot_sep + 3, "/");
         if (p) {
-          clean_path = genericize_path(p, td);
+          clean_path = genericize_path(service_string, p, td);
         } else {
           clean_path = strdup("/");
         }
@@ -352,7 +401,7 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
 
     }
   } else {
-    mtevL(tm_error, "Unknown transaction type: %s\n", type);
+    mtevL(tm_debug, "Unknown transaction type: %s\n", type);
   }
 
 
@@ -440,3 +489,5 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
   }
   return false;
 }
+
+#undef RETURN_IF_MISSING

@@ -74,7 +74,7 @@ pre_process(mtev_json_object *message, char *team, char *tag_string, uint64_t *t
   char sn[256];
   const char *service_name = tm_service_name(message);
   if (!tm_get_team(service_name, team)) {
-    mtevL(tm_error, "Failed to get team name");
+    mtevL(tm_error, "Failed to get team name from: %s\n", service_name);
     return NULL;
   }
   strcpy(sn, service_name + strlen(team) + 1);
@@ -294,5 +294,28 @@ update_average(team_data_t *td, mtev_hash_table *team_metrics, const char *metri
       mtev_hash_store(team_metrics, (const char *)key, key->key_len, v);
     }
     pthread_mutex_unlock(&td->mutex);
+  }
+}
+
+void
+reset_value(metric_value_t *v)
+{
+  v->count = 0;
+  v->flushed_ms = 0;
+  switch(v->type) {
+  case METRIC_VALUE_TYPE_NUMBER:
+    ck_pr_store_double(&v->metric.number, 0);
+    break;
+  case METRIC_VALUE_TYPE_TEXT:
+    break;
+  case METRIC_VALUE_TYPE_HISTOGRAM:
+    ck_spinlock_lock(&v->histogram_lock);
+    hist_free(v->metric.hist);
+    v->metric.hist = hist_alloc();
+    ck_spinlock_unlock(&v->histogram_lock);
+    break;
+  case METRIC_VALUE_TYPE_INTEGER:
+    ck_pr_store_64(&v->metric.integer, 0);
+    break;
   }
 }

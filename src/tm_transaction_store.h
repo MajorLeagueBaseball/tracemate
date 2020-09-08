@@ -59,7 +59,6 @@ size_t tm_transaction_store_process_jaeger();
 
 /* returns deleted count */
 size_t tm_transaction_store_delete_old_transactions();
-void tm_transaction_store_delete(const char *id, size_t id_len);
 
 void tm_transaction_store_entry_free(tm_transaction_store_entry_t *e);
 

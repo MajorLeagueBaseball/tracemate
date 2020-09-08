@@ -242,7 +242,13 @@ bool process_aggregate_message(topic_stats_t *stats, mtev_json_object *message)
           metric_key_t *mkey = make_metric_key(key, timestamp);
           mkey->immediate_flush = false;
           void *existing = NULL;
+          bool debug_output = strncmp(mkey->metric_name, "transaction - request_count - all|ST[service:bdata-statsapi-analytics-prod_gke_us-east4_baseball,host:all,ip:all,method:GET]", mkey->key_len) == 0;
           if (mtev_hash_retrieve(team_metrics, (const char *)mkey, mkey->key_len, &existing)) {
+            if (debug_output) {
+              mtevL(mtev_error, 
+                    "METRIC_TS: %" PRIu64 ", inbound aggregate -- found in hash, adding: %" PRIu64 "\n", 
+                    mkey->timestamp, count);
+            }
             metric_value_t *v = (metric_value_t *)existing;
             ck_pr_store_64(&v->last_seen, mtev_now_ms());
             ck_pr_add_64(&v->metric.integer, count);
@@ -256,6 +262,11 @@ bool process_aggregate_message(topic_stats_t *stats, mtev_json_object *message)
               ck_pr_add_64(&v->metric.integer, count);
               metric_key_free(mkey);
             } else {
+              if (debug_output) {
+                mtevL(mtev_error, 
+                      "METRIC_TS: %" PRIu64 ", inbound aggregate -- not in hash, adding: %" PRIu64 "\n", 
+                      mkey->timestamp, count);
+              }
               metric_value_t *v = make_integer_value(count);
               mtev_hash_store(team_metrics, (const char *)mkey, mkey->key_len, v);
             }

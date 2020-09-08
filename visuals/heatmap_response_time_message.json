@@ -1,0 +1,28 @@
+{
+  "datapoints": [
+    {
+      "name": "Heatmap Transaction Latency (ms)",
+      "derive": "gauge",
+      "check_id": {{ check_id }},
+      "data_formula": "=VAL*1000",
+      "alpha": "1",
+      "hidden": false,
+      "color": "#4C8BCC",
+      "legend_formula": "=round(VAL,1)",
+      "metric_type": "histogram",
+      "search": null,
+      "metric_name": "transaction - latency - all|ST[service:{{ service_name }},host:all,ip:all]",
+      "axis": "l",
+      "caql": null,
+      "stack": 0
+    }
+  ],
+  "description": "Heatmap of response time overall for this service",
+  "line_style": "interpolated",
+  "notes": "Latencies are in milliseconds",
+  "style": "area",
+  "tags": [
+    "service:{{ service_name }}"
+  ],
+  "title": "{{ service_name }} - Heatmap of Response Time"
+}

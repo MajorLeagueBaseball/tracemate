@@ -93,8 +93,8 @@ tm_kafka_t *tm_kafka_connect(const char *broker_list, rd_kafka_type_t type, cons
   rd_kafka_conf_set(conf, "compression.codec", "lz4",
                     NULL, 0);
   rd_kafka_conf_set(conf, "queued.min.messages", "10000", NULL, 0);
-  rd_kafka_conf_set(conf, "fetch.message.max.bytes", "25000", NULL, 0);
-  rd_kafka_conf_set(conf, "queued.max.message.kbytes", "100000", NULL, 0);
+  //rd_kafka_conf_set(conf, "fetch.message.max.bytes", "25000", NULL, 0);
+  rd_kafka_conf_set(conf, "queued.max.message.kbytes", "1000000", NULL, 0);
 
   /* rd_kafka_conf_set(conf, "debug", "broker,topic,msg", */
   /*                   NULL, 0);  */
@@ -133,7 +133,7 @@ tm_kafka_poll(tm_kafka_t *t)
   rd_kafka_poll(t->rk, 5);
 }
 
-tm_kafka_topic_t *tm_kafka_start_consume(tm_kafka_t *t, const char *topic, int partition, int batch_size)
+tm_kafka_topic_t *tm_kafka_start_consume(tm_kafka_t *t, const char *topic, int partition, int batch_size, int64_t offset)
 {
   tm_kafka_topic_t *top = (tm_kafka_topic_t *)malloc(sizeof(tm_kafka_topic_t));
   top->topic = strdup(topic);
@@ -150,7 +150,7 @@ tm_kafka_topic_t *tm_kafka_start_consume(tm_kafka_t *t, const char *topic, int p
   top->batch_size = batch_size;
 
   /* Start consuming */
-  if (rd_kafka_consume_start(top->rkt, top->partition, RD_KAFKA_OFFSET_STORED) == -1) {
+  if (rd_kafka_consume_start(top->rkt, top->partition, offset) == -1) {
     rd_kafka_resp_err_t err = rd_kafka_last_error();
     mtevL(tm_error, "%% Failed to start consuming: %s\n",
             rd_kafka_err2str(err));
@@ -185,9 +185,9 @@ tm_kafka_topic_t *tm_kafka_produce_topic(tm_kafka_t *t, const char *topic)
 
 bool tm_kafka_produce(tm_kafka_topic_t *t, void *payload, size_t size, const void *key, size_t key_size)
 {
-#ifdef NO_PUBLISH
-  return true;
-#else
+/* #ifdef NO_PUBLISH */
+/*   return true; */
+/* #else */
  retry:
   if (rd_kafka_produce(t->rkt, RD_KAFKA_PARTITION_UA, RD_KAFKA_MSG_F_COPY, payload, size,
                        key, key_size, NULL) == -1) {
@@ -202,7 +202,7 @@ bool tm_kafka_produce(tm_kafka_topic_t *t, void *payload, size_t size, const voi
   }
 
   return true;
-#endif
+/* #endif */
 }
 
 bool tm_kafka_produce_on_partition(tm_kafka_topic_t *t, const void *payload, size_t size, int partition)
@@ -269,6 +269,10 @@ tm_kafka_handle_message(topic_stats_t *stats, const char *event, mtev_json_objec
     keep = process_error_message(stats, top, ttl);
   } else if (strcmp(event, "aggregate") == 0) {
     keep = process_aggregate_message(stats, top);
+  } else if (strcmp(event, "url") == 0) {
+    keep = process_url_message(stats, top);
+  } else if (strcmp(event, "regex") == 0) {
+    keep = process_regex_message(stats, top);
   } else {
     mtevL(tm_error, "Unknown processor.event '%s'\n", event);
     stats_add64(stats->messages_errored, 1);
@@ -279,8 +283,6 @@ tm_kafka_handle_message(topic_stats_t *stats, const char *event, mtev_json_objec
 static bool
 tm_kafka_process_message(rd_kafka_message_t *m, topic_stats_t *stats)
 {
-  stats_add64(stats->messages_seen, 1);
-
   /*
    * The incoming message is a JSON formatted elastic APM messages
    *
@@ -310,6 +312,7 @@ tm_kafka_process_message(rd_kafka_message_t *m, topic_stats_t *stats)
    *
    */
   if (m != NULL && m->err == 0) {
+    stats_add64(stats->messages_seen, 1);
     struct mtev_json_tokener *tokener = mtev_json_tokener_new();
     const char *json = m->payload;
     if (json != NULL) {

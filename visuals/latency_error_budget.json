@@ -1,0 +1,60 @@
+{
+  "datapoints": [
+    {
+      "metric_type": "caql",
+      "legend_formula": "=round(VAL,0)",
+      "search": null,
+      "metric_name": null,
+      "caql": "find:histogram(\"transaction - latency - all\", \"and(host:all,method:GET,service:{{ service_name }})\") | histogram:merge() | histogram:count_above({{ slo_secs }}) | label(\"SLO Violating request count ({{ slo_ms }} ms)\")",
+      "axis": "r",
+      "stack": null,
+      "name": "SLO Violating request count ({{ slo_ms }} ms)",
+      "derive": "gauge",
+      "check_id": null,
+      "data_formula": null,
+      "alpha": "0.5",
+      "color": "#d74b2c",
+      "hidden": false
+    },
+    {
+      "search": null,
+      "metric_name": null,
+      "stack": null,
+      "caql": "{{ slo_budget_limit }} | label(\"SLO Spend Target ({{ slo_budget_limit_as_percent }}%)\")",
+      "axis": "l",
+      "metric_type": "caql",
+      "legend_formula": "=round(VAL,0)",
+      "color": "#080808",
+      "hidden": false,
+      "derive": "gauge",
+      "check_id": null,
+      "name": "SLO Spend Target",
+      "alpha": "0.01",
+      "data_formula": null
+    },
+    {
+      "search": null,
+      "metric_name": null,
+      "stack": null,
+      "caql": "integrate:while(prefill={{ slo_budget_length }}){time:tz(\"America/New_York\", \"month\"),find:histogram(\"transaction - latency - all\", \"and(host:all,method:GET,service:{{ service_name }})\")| histogram:merge()| histogram:count_above({{ slo_secs }})}/(find:histogram(\"transaction - latency - all\", \"and(host:all,method:GET,service:{{ service_name }})\")| histogram:merge()| histogram:count()| rolling:sum({{ slo_budget_length }}, skip=1h)| op:prod(60) | op:prod(VIEW_PERIOD))| label(\"Latency Budget spent per {{ slo_budget_length }}\")",
+      "axis": "l",
+      "metric_type": "caql",
+      "legend_formula": "=round(VAL,4)",
+      "color": "#1177dc",
+      "hidden": false,
+      "check_id": null,
+      "derive": "gauge",
+      "name": "Latency Budget spent per {{ slo_budget_length }}",
+      "alpha": "0.8",
+      "data_formula": null
+    }
+  ],
+  "description": "Latency SLO and error budget spend",
+  "line_style": "interpolated",
+  "notes": "Latencies are in milliseconds",
+  "style": "area",
+  "tags": [
+    "service:{{ service_name }}"
+  ],
+  "title": "{{ service_name }} - Latency SLO Error Budget"
+}

@@ -16,6 +16,7 @@
 
 #include <mtev_defines.h>
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -59,8 +60,10 @@
 #include "tm_metric.h"
 #include "tm_process.h"
 #include "tm_transaction_store.h"
+#include "tm_url_squasher.h"
 #include "tm_utils.h"
 #include "tm_version.h"
+#include "tm_visuals.h"
 
 #define APPNAME "tm"
 #define CHILD_WATCHDOG_TIMEOUT 5 /*seconds*/
@@ -78,14 +81,18 @@ static uint64_t default_jaeger_threshold_us = 2000 * 1000; // ms to us
 static tm_kafka_t *kafka_conn = NULL;
 static tm_kafka_t *kafka_producer_conn = NULL;
 static tm_kafka_topic_t *agg_topic = NULL;
+static tm_kafka_topic_t *url_topic = NULL;
+static tm_kafka_topic_t *regex_topic = NULL;
 static int transaction_lookback_secs = 300;
 static eventer_jobq_t *metric_flush_jobq;
 static eventer_jobq_t *transaction_clean_jobq;
 static eventer_jobq_t *maintenance_jobq;
+static eventer_jobq_t *visuals_jobq;
 static stats_recorder_t *global_stats_recorder;
 
 static size_t all_stats_len = 0;
 static topic_stats_t **all_stats = NULL;
+static bool test = false;
 
 static void usage(const char *progname) {
   printf("Usage for %s:\n", progname);
@@ -94,8 +101,11 @@ static void usage(const char *progname) {
 
 void parse_clargs(int argc, char **argv) {
   int c;
-  while((c = getopt(argc, argv, "hc:dDu:g:n:t:l:L:G:")) != EOF) {
+  while((c = getopt(argc, argv, "hc:dDu:g:n:t:l:L:G:T")) != EOF) {
     switch(c) {
+    case 'T':
+      test = true;
+      break;
     case 'G':
       free(glider);
       glider = strdup(optarg);
@@ -213,7 +223,24 @@ metric_flush(eventer_t e, int mask, void *closure, struct timeval *tv)
     {
     case EVENTER_ASYNCH_WORK:
       {
-        tm_flush_team_metrics(teams, agg_topic);
+        tm_flush_team_metrics(teams, agg_topic, regex_topic);
+      }
+      break;
+    case EVENTER_ASYNCH:
+      break;
+    };
+  return 0;
+}
+
+static int
+visuals_create(eventer_t e, int mask, void *closure, struct timeval *tv)
+{
+  mtev_hash_table *teams = (mtev_hash_table *)closure;
+  switch(mask)
+    {
+    case EVENTER_ASYNCH_WORK:
+      {
+        tm_create_visuals(teams);
       }
       break;
     case EVENTER_ASYNCH:
@@ -296,6 +323,22 @@ maintenance_function(eventer_t e, int mask, void *closure, struct timeval *tv)
   return 0;
 }
 
+static int
+trigger_visuals(eventer_t e, int mask, void *closure, struct timeval *tv)
+{
+  /* trigger the visuals jobq */
+  eventer_t enew = eventer_alloc_asynch(visuals_create, closure);
+  eventer_add_asynch(visuals_jobq, enew);
+
+  /* retrigger myself in N seconds */
+  struct timeval tvnew;
+  mtev_gettimeofday(&tvnew, NULL);
+  tvnew.tv_sec += 600; // every 10 minutes
+  eventer_add_at(trigger_visuals, closure, tvnew);
+  return 0;
+}
+
+
 uint64_t get_jaeger_threshold_us(const char *service_name)
 {
   if (service_name != NULL) {
@@ -345,9 +388,16 @@ tm_init()
   eventer_jobq_set_min_max(metric_flush_jobq, 1, 4);
   transaction_clean_jobq = eventer_jobq_create("tm_transaction_clean_jobq");
   maintenance_jobq = eventer_jobq_create("tm_maintenance_jobq");
+  visuals_jobq = eventer_jobq_create("tm_visuals_jobq");
   mtev_hash_init_locks(&threshold_hash, 200, MTEV_HASH_LOCK_MODE_MUTEX);
 
-  init_path_regex();
+  /* init the transaction store */
+  char *tdb_path = "/tracemate/data/ts";
+  uint64_t db_size = 5000000000;
+  mtev_conf_get_int32(MTEV_CONF_ROOT, "/tm/transaction_db/@lookback_seconds", &transaction_lookback_secs);
+  mtev_conf_get_string(MTEV_CONF_ROOT, "/tm/transaction_db/@path", &tdb_path);
+  mtev_conf_get_uint64(MTEV_CONF_ROOT, "/tm/transaction_db/@initial_size", &db_size);
+  tm_transaction_store_init(TM_TRANSACTION_STORE_TYPE_LMDB, tdb_path, db_size, transaction_lookback_secs);
 
   /* read mtev_config to determine what topic and partition I am reading */
   char *broker_list = NULL;
@@ -377,6 +427,10 @@ tm_init()
   }
 
   agg_topic = tm_kafka_produce_topic(kafka_producer_conn, "tracemate_aggregates");
+  url_topic = tm_kafka_produce_topic(kafka_producer_conn, "tracemate_urls");
+  regex_topic = tm_kafka_produce_topic(kafka_producer_conn, "tracemate_regexes");
+
+  init_path_regex(url_topic);
 
   stats_ns_t *root_ns = stats_recorder_global_ns(global_stats_recorder);
   stats_ns_t *tm_ns = stats_register_ns(global_stats_recorder, root_ns, "tracemate");
@@ -388,16 +442,27 @@ tm_init()
   for (int i = 0; i < topic_count; i++) {
     char *topic = NULL;
     int32_t partition, read_delay_ms = 0;
+    int64_t offset = RD_KAFKA_OFFSET_STORED;
     mtev_conf_get_string(topics[i], "@name", &topic);
     mtev_conf_get_int32(topics[i], "@partition", &partition);
     mtev_conf_get_int32(topics[i], "@batch_size", &batch_size);
     mtev_conf_get_int32(topics[i], "@read_delay_ms", &read_delay_ms);
 
+    /* Either an actual offset [0..N] or the integer value of one of the predefined offset types:
+     *
+     * #define 	RD_KAFKA_OFFSET_BEGINNING   -2
+     * #define 	RD_KAFKA_OFFSET_END   -1
+     * #define 	RD_KAFKA_OFFSET_STORED   -1000
+     * #define 	RD_KAFKA_OFFSET_TAIL(CNT)   (RD_KAFKA_OFFSET_TAIL_BASE - (CNT))
+     *
+     * see: https://docs.confluent.io/2.0.0/clients/librdkafka/rdkafka_8h.html#ae21dcd2d8c6195baf7f9f4952d7e12d4
+     */
+    mtev_conf_get_int64(topics[i], "@offset", &offset);
 
     /* start consumption */
     all_stats[i] = (topic_stats_t *)calloc(1, sizeof(topic_stats_t));
 
-    all_stats[i]->topic = tm_kafka_start_consume(kafka_conn, topic, partition, batch_size);
+    all_stats[i]->topic = tm_kafka_start_consume(kafka_conn, topic, partition, batch_size, offset);
     all_stats[i]->read_delay_ms = read_delay_ms;
     if (all_stats[i]->topic == NULL) {
       mtevFatal(tm_error, "Failed to start consumption, exiting");
@@ -467,14 +532,8 @@ tm_init()
   }
   mtev_conf_release_sections_read(topics, topic_count);
 
-  char *tdb_path = "/tracemate/data/ts";
   char *journal_path = "/tracemate/data/journal";
-  uint64_t db_size = 5000000000;
-  mtev_conf_get_int32(MTEV_CONF_ROOT, "/tm/transaction_db/@lookback_seconds", &transaction_lookback_secs);
   mtev_conf_get_string(MTEV_CONF_ROOT, "/tm/circonus_journal_path", &journal_path);
-  mtev_conf_get_string(MTEV_CONF_ROOT, "/tm/transaction_db/@path", &tdb_path);
-  mtev_conf_get_uint64(MTEV_CONF_ROOT, "/tm/transaction_db/@initial_size", &db_size);
-  tm_transaction_store_init(TM_TRANSACTION_STORE_TYPE_LMDB, tdb_path, db_size, transaction_lookback_secs);
   bool ok = tm_circonus_init(journal_path);
   mtevAssert(ok);
   free(tdb_path);
@@ -488,13 +547,17 @@ tm_init()
     team_data_t *td = (team_data_t *)calloc(1, sizeof(team_data_t));
     /* by default we don't want to collect ip/host cardinality metrics */
     td->collect_host_level_metrics = mtev_false;
+    td->collect_host_level_system = mtev_false;
     td->rollup_high_cardinality = mtev_false;
 
     mtev_conf_get_string(teams[i], "@name", &name);
     mtev_conf_get_string(teams[i], "@metric_submission_url", &td->metric_submission_url);
     mtev_conf_get_string(teams[i], "@jaeger_dest_url", &td->jaeger_dest_url);
     mtev_conf_get_boolean(teams[i], "@collect_host_level_metrics", &td->collect_host_level_metrics);
+    mtev_conf_get_boolean(teams[i], "@collect_host_level_system", &td->collect_host_level_system);
     mtev_conf_get_boolean(teams[i], "@rollup_high_cardinality", &td->rollup_high_cardinality);
+    mtev_conf_get_string(teams[i], "@circonus_api_key", &td->circonus_api_key);
+    mtev_conf_get_string(teams[i], "@check_id", &td->check_id);
 
     /* allow url list */
     td->allowlist_count = 0;
@@ -598,6 +661,18 @@ tm_init()
    */
   tv.tv_sec += 1;
   eventer_add_at(trigger_maintenance, &threshold_hash, tv);
+
+  /*
+   * trigger a periodic dashboard creation job
+   *
+   * This job reads through the services owned by this instance and checks circonus for the presence of 
+   * a dashboard and related graphs, if missing, it will create one
+   *
+   * This job will retrigger when it's done
+   * to create a continuous loop
+   */
+  tv.tv_sec += 10;
+  eventer_add_at(trigger_visuals, get_all_team_data(), tv);
 
 }
 
@@ -747,9 +822,41 @@ static int child_main() {
 }
 
 int main(int argc, char **argv) {
+  parse_clargs(argc, argv);
+
+  if (test) {
+    tm_path_squasher_t *ps = tm_path_squasher_alloc(200);
+    
+    FILE *fp = fopen("url_list.txt", "r");
+    if (fp == NULL)
+      exit(EXIT_FAILURE);
+
+    ssize_t read;
+    size_t len = 0;
+    char *line = NULL;
+    while ((read = getline(&line, &len, fp)) != -1) {
+      tm_path_squasher_add_path(ps, line);
+    }
+
+    mtev_hash_table *t = tm_path_squasher_get_regexes(ps);
+    mtev_hash_iter it = MTEV_HASH_ITER_ZERO;
+    while(mtev_hash_adv(t, &it)) {
+      printf("{\"regex\": \"%s\",", it.key.str);
+      printf("\"replace\": \"%s\"}\n", ((pcre_matcher *)it.value.ptr)->replace);
+    }
+    mtev_hash_destroy(t, free, pcre_matcher_destroy);
+    tm_path_squasher_destroy(ps);
+
+    fclose(fp);
+    if (line) {
+      free(line);
+    }
+  }
+
+  curl_global_init(CURL_GLOBAL_ALL);
+
   int lock = MTEV_LOCK_OP_LOCK;
   mtev_memory_init();
-  parse_clargs(argc, argv);
   return mtev_main(APPNAME, config_file, debug, foreground,
                    lock, glider, droptouser, droptogroup,
                    child_main);

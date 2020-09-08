@@ -54,7 +54,7 @@ else
 fi
 SHLDFLAGS="$LDFLAGS"
 
-CPPFLAGS='-I$(top_srcdir)/src'" $CPPFLAGS -D_REENTRANT -D_XOPEN_SOURCE=600 -D_XOPEN_SOURCE_EXTENDED -D_POSIX_SOURCE -D_POSIX_C_SOURCE=200112L "
+CPPFLAGS='-I$(top_srcdir)/src'" $CPPFLAGS -D_REENTRANT -D_XOPEN_SOURCE=600 -D_XOPEN_SOURCE_EXTENDED -D_POSIX_SOURCE -D_POSIX_C_SOURCE=200809L "
 DOTSO=.so
 
 MTEV_MODULES_DIR=`mtev-config --modules-dir 2>/dev/null`
@@ -214,6 +214,7 @@ LIBS="-lstdc++ -lprotobuf -llmdb -lgrpc++ -lgrpc++_reflection -lgrpc -lgpr -lcar
 AC_OUTPUT([
 Makefile
 src/Makefile
+src/bloom/Makefile
 src/proto/Makefile
 src/modules/Makefile
 ])

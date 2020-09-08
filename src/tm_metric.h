@@ -81,9 +81,36 @@ typedef struct pcre_matcher {
   char *replace;
 } pcre_matcher;
 
+typedef enum service_type
+{
+ SERVICE_TYPE_UNKNOWN=0,
+ SERVICE_TYPE_TRANSACTIONAL=1,
+ SERVICE_TYPE_MESSAGE=2,
+ SERVICE_TYPE_SCHEDULED=3
+} service_type_e;
+
+typedef struct service_info {
+  char *service_agent;
+  service_type_e service_type;
+  bool created;
+} service_info_t;
+
 typedef struct team_data {
   /* stores metrics where key is the circonus metric name */
   mtev_hash_table hash;
+  char *team_name;
+  char *circonus_api_key;
+  char *check_id;
+  /* stores hyperloglogs for each 5 minute window going back an hour */
+  mtev_hash_table hlls;
+  /* service name to td_path_squasher_t * */
+  mtev_hash_table path_squashers;
+  /* service name to set of regular expressions (regex string -> pcre_matcher struct) */
+  mtev_hash_table squash_regexes;
+  /* service name to info about the service */
+  mtev_hash_table service_data;
+
+  int path_squash_cardinality_factor;
   pthread_mutex_t mutex;
   char **allowlist;
   size_t allowlist_count;
@@ -94,6 +121,7 @@ typedef struct team_data {
   char *transaction_db_path;
   uint64_t trace_threshold_us;
   mtev_boolean collect_host_level_metrics;
+  mtev_boolean collect_host_level_system;
   mtev_boolean always_send_errors;
   mtev_boolean rollup_high_cardinality;
   uint64_t histogram_threshold_us;
@@ -194,6 +222,14 @@ void tm_add_team(const char *team, team_data_t *data);
 void tm_metrics_init();
 mtev_hash_table *get_all_team_data();
 
-void tm_flush_team_metrics(mtev_hash_table *teams, tm_kafka_topic_t *agg_topic);
+static inline void pcre_matcher_destroy(void *m) {
+  pcre_matcher *match = (pcre_matcher *)m;
+  pcre_free_study(match->extra);
+  pcre_free(match->match);
+  free(match->replace);
+  free(match);
+}
+
+void tm_flush_team_metrics(mtev_hash_table *teams, tm_kafka_topic_t *agg_topic, tm_kafka_topic_t *regex_topic);
 
 #endif

@@ -1,0 +1,59 @@
+{
+  "datapoints": [
+    {
+      "axis": "r",
+      "check_id": null,
+      "caql": "find:average(\"transaction - server_error_count - all\", \"and(host:all,method:GET,service:{{ service_name }})\") | label(\"SLO Violating request count\")",
+      "stack": null,
+      "legend_formula": "=round(VAL,0)",
+      "metric_name": null,
+      "metric_type": "caql",
+      "name": "SLO Violating request count",
+      "search": null,
+      "color": "#d74b2c",
+      "hidden": false,
+      "derive": "gauge",
+      "data_formula": null,
+      "alpha": "0.5"
+    },
+    {
+      "color": "#080808",
+      "data_formula": null,
+      "alpha": "0.01",
+      "derive": "gauge",
+      "hidden": false,
+      "metric_name": null,
+      "legend_formula": "=round(VAL,0)",
+      "search": null,
+      "metric_type": "caql",
+      "name": "SLO Spend Target",
+      "stack": null,
+      "check_id": null,
+      "caql": "{{ slo_budget_limit }}| label(\"SLO Spend Target ({{ slo_budget_limit_as_percent }}%)\")",
+      "axis": "l"
+    },
+    {
+      "search": null,
+      "name": "Response Budget spent per {{slo_budget_length }}",
+      "metric_type": "caql",
+      "metric_name": null,
+      "legend_formula": "=round(VAL,4)",
+      "data_formula": null,
+      "alpha": "0.8",
+      "hidden": false,
+      "derive": "gauge",
+      "color": "#1177dc",
+      "axis": "l",
+      "stack": null,
+      "caql": "op:div(){integrate:while(prefill={{ slo_budget_length }}){time:tz(\"US/Eastern\", \"month\"),op:sum(){find:average(\"transaction - server_error_count - all\", \"and(host:all,method:GET,service:{{ service_name }})\")| fill(0),find:average(\"transaction - apm_error_count\", \"and(host:all,service:{{ service_name }})\")| fill(0)}},(find:average(\"transaction - request_count - all\", \"and(host:all,method:GET,service:{{ service_name }})\")| fill(1)| rolling:sum({{ slo_budget_length }}, skip=1h)| op:prod(60) | op:prod(VIEW_PERIOD))}| label(\"Response Budget spent per {{ slo_budget_length }}\")",
+      "check_id": null
+    }
+  ],
+  "description": "Successful response SLO and error budget spend",
+  "line_style": "interpolated",
+  "style": "area",
+  "tags": [
+    "service:{{ service_name }}"
+  ],
+  "title": "{{ service_name }} - Successful Response SLO Error Budget"
+}

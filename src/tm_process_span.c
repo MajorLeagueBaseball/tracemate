@@ -26,6 +26,17 @@
 
 static pcre *sql_match = NULL;
 
+#define RETURN_IF_MISSING(result,o,field)                               \
+  mtev_json_object *result = NULL;                                      \
+  do {                                                                  \
+    if (o == NULL) return false;                                        \
+    result = mtev_json_object_object_get(o, field);                     \
+    if (result == NULL) {                                               \
+      mtevL(tm_error, "'span' event is malformed, no '%s' object\n", field); \
+      return false;                                                     \
+    }                                                                   \
+  } while(false)
+
 static bool
 parse_stmt(const char *stmt, char *table, size_t table_len)
 {
@@ -198,7 +209,15 @@ process_span_message_with_root(mtev_json_object *message, tm_transaction_store_e
   }
 
   mtev_json_object *type = mtev_json_object_object_get(span, "type");
-  mtev_json_object *context = mtev_json_object_object_get(message, "context");
+
+  RETURN_IF_MISSING(context, message, "context");
+  RETURN_IF_MISSING(service, context, "service");
+  RETURN_IF_MISSING(service_name, service, "name");
+  const char *service_string = NULL;
+  if (service_name) {
+    service_string = mtev_json_object_get_string(service_name);
+  }
+
   const char *t = mtev_json_object_get_string(type);
   mtev_json_object *db = mtev_json_object_object_get(context, "db");
 
@@ -289,8 +308,8 @@ process_span_message_with_root(mtev_json_object *message, tm_transaction_store_e
      *
      * We need to genericize this
      */
-    char *external_name = genericize_path(ex_name, td);
-    char *generic_url = genericize_path(url, td);
+    char *external_name = genericize_path(service_string, ex_name, td);
+    const char *generic_url = url;
 
     timestamp = ceil_timestamp(timestamp);
 
@@ -335,10 +354,11 @@ process_span_message_with_root(mtev_json_object *message, tm_transaction_store_e
     update_counter(td, team_metrics, metric_name, true, 1, timestamp);
 
     free(external_name);
-    free(generic_url);
   }
   else {
     mtevL(tm_debug, "Unprocessed span type: %s\n", mtev_json_object_get_string(type));
   }
   return false;
 }
+
+#undef RETURN_IF_MISSING

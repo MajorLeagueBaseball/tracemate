@@ -1,0 +1,43 @@
+{
+  "datapoints": [
+    {
+      "metric_type": "numeric",
+      "legend_formula": null,
+      "search": null,
+      "metric_name": "system - cpu - total - pct|ST[service:{{ service_name }},host:all,ip:all]",
+      "stack": null,
+      "caql": null,
+      "axis": "l",
+      "derive": "gauge",
+      "check_id": {{ check_id }},
+      "name": "Average - System CPU %",
+      "alpha": null,
+      "data_formula": "=VAL*100",
+      "hidden": false,
+      "color": "#BABDC0"
+    },
+    {
+      "hidden": false,
+      "color": "#BABDC0",
+      "name": "Average - Process CPU %",
+      "check_id": {{ check_id }},
+      "derive": "gauge",
+      "data_formula": "=VAL*100",
+      "alpha": null,
+      "metric_name": "system - process - cpu - total - pct|ST[service:{{ service_name }},host:all,ip:all]",
+      "search": null,
+      "caql": null,
+      "axis": "l",
+      "stack": null,
+      "metric_type": "numeric",
+      "legend_formula": null
+    }
+  ],
+  "description": "CPU utilization",
+  "line_style": "interpolated",
+  "style": "line",
+  "tags": [
+    "service:{{ service_name }}"
+  ],
+  "title": "{{ service_name }} - CPU"
+}

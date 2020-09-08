@@ -85,8 +85,11 @@ MODDIR=modules
 
 HEADERS=
 
-TM_OBJS=main.o tm_circonus.o tm_hooks.o tm_kafka.o tm_process_metric.o tm_process_transaction.o tm_process_error.o tm_process_aggregate.o \
-	tm_process_span.o tm_process.o tm_metric.o tm_utils.o tm_jaeger.o tm_transaction_store.o
+TM_OBJS=main.o tm_circonus.o tm_hooks.o tm_kafka.o tm_process_metric.o \
+	tm_process_transaction.o tm_process_error.o tm_process_aggregate.o \
+	tm_process_span.o tm_process.o tm_metric.o tm_utils.o tm_jaeger.o \
+	tm_transaction_store.o tm_url_squasher.o tm_process_url.o tm_process_regex.o \
+	tm_visuals.o bloom/bloom.o 
 
 FINAL_TM_OBJS=$(TM_OBJS:%.o=tm-objs/%.o)
 

@@ -90,7 +90,7 @@ static inline uint64_t parse_timestamp(const char *ts)
  * 
  * Take the last path section and completely elide if it's a file (contains a dot)
  */
-char *genericize_path(const char *str, team_data_t *td);
+char *genericize_path(const char *service_name, const char *str, team_data_t *td);
 bool is_path_ok(const char *str, team_data_t *td);
 
 tm_kafka_topic_t *get_span_producer_topic();
@@ -99,9 +99,11 @@ tm_kafka_topic_t *get_transaction_producer_topic();
 
 uint64_t get_jaeger_threshold_us(const char *service_name);
 
-void init_path_regex();
+void init_path_regex(tm_kafka_topic_t *url_topic);
 
-const char *get_oauth2_token(const char *private_key_id, const char *private_key,
+char *get_oauth2_token(const char *private_key_id, const char *private_key,
                              const char *service_account, const char *scope, const char *aud);
+
+char *tm_replace_vars(const char *source, mtev_hash_table *values);
 
 #endif

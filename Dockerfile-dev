@@ -14,7 +14,7 @@
 
 
 # centos7 base image
-FROM majorleaguebaseball/tracemate-base:59f2877 AS base
+FROM majorleaguebaseball/tracemate-base:3477f29 AS base
 
 # Install the things we need
 RUN yum -y update && \

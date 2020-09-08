@@ -34,7 +34,7 @@ tm_kafka_t *tm_kafka_connect(const char *broker_list, rd_kafka_type_t type,  con
 /* tm_kafka_t is no longer valid after this function returns */
 void tm_kafka_disconnect(tm_kafka_t *t);
 
-tm_kafka_topic_t *tm_kafka_start_consume(tm_kafka_t *t, const char *topic, int partition, int batch_size);
+tm_kafka_topic_t *tm_kafka_start_consume(tm_kafka_t *t, const char *topic, int partition, int batch_size, int64_t offset);
 tm_kafka_topic_t *tm_kafka_produce_topic(tm_kafka_t *t, const char *topic);
 
 int tm_kafka_get_partition(tm_kafka_topic_t *t);

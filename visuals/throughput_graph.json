@@ -1,0 +1,44 @@
+{
+  "datapoints": [
+    {
+      "hidden": false,
+      "color": "#4C8BCC",
+      "check_id": {{ check_id }},
+      "derive": "gauge",
+      "name": "Throughput - GET",
+      "alpha": null,
+      "data_formula": null,
+      "metric_name": "transaction - request_count - all|ST[service:{{ service_name }},host:all,ip:all,method:GET]",
+      "search": null,
+      "stack": null,
+      "axis": "l",
+      "caql": null,
+      "metric_type": "numeric",
+      "legend_formula": null
+    },
+    {
+      "color": "#8FB4D5",
+      "hidden": false,
+      "check_id": {{ check_id }},
+      "derive": "gauge",
+      "name": "Throughput - POST",
+      "alpha": null,
+      "data_formula": null,
+      "metric_name": "transaction - request_count - all|ST[service:{{ service_name }},host:all,ip:all,method:POST]",
+      "search": null,
+      "stack": null,
+      "axis": "l",
+      "caql": null,
+      "legend_formula": null,
+      "metric_type": "numeric"
+    }
+  ],
+  "description": "Total requests per time window for a service",
+  "guides": [],
+  "line_style": "interpolated",
+  "style": "line",
+  "tags": [
+    "service:{{ service_name }}"
+  ],
+  "title": "{{ service_name }} - Throughput"
+}

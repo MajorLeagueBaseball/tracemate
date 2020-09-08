@@ -19,8 +19,11 @@
 #include "tm_utils.h"
 #include "tm_log.h"
 #include "tm_kafka.h"
+#include "tm_process.h"
+#include "tm_url_squasher.h"
 
 #include <mtev_dyn_buffer.h>
+#include <mtev_hyperloglog.h>
 #include <mtev_rand.h>
 
 #define TWO_MB 2097152
@@ -55,8 +58,14 @@ team_data_t *get_team_data(const char *team) {
 
 void tm_add_team(const char *team, team_data_t *data) {
   char *copy = strdup(team);
+  data->team_name = copy;
   pthread_mutex_init(&data->mutex, NULL);
   mtev_hash_init_mtev_memory(&data->hash, 1000, MTEV_HASH_LOCK_MODE_MUTEX);
+  mtev_hash_init_mtev_memory(&data->hlls, 20, MTEV_HASH_LOCK_MODE_NONE);
+  mtev_hash_init_mtev_memory(&data->path_squashers, 20, MTEV_HASH_LOCK_MODE_NONE);
+  mtev_hash_init_mtev_memory(&data->squash_regexes, 20, MTEV_HASH_LOCK_MODE_MUTEX);
+  mtev_hash_init_mtev_memory(&data->service_data, 200, MTEV_HASH_LOCK_MODE_MUTEX);
+  data->path_squash_cardinality_factor = 200;
   mtev_hash_store(&team_metrics, copy, strlen(copy), data);
 }
 
@@ -193,15 +202,49 @@ static bool
 send_aggregate_to_kafka(mtev_dyn_buffer_t *json, const char *key, size_t key_len, team_data_t *td, tm_kafka_topic_t *agg_topic)
 {
 #ifdef NO_PUBLISH
-  mtevL(mtev_error, "Publishing off, not sending to kafka: %.*s\n", (int)mtev_dyn_buffer_used(json), mtev_dyn_buffer_data(json));
+  mtevL(mtev_debug, "Publishing off, not sending to kafka: %.*s\n", (int)mtev_dyn_buffer_used(json), mtev_dyn_buffer_data(json));
   return true;
 #else
   return tm_kafka_produce(agg_topic, mtev_dyn_buffer_data(json), mtev_dyn_buffer_used(json), key, key_len);
 #endif
 }
 
-void tm_flush_team_metrics(mtev_hash_table *teams, tm_kafka_topic_t *agg_topic)
+static bool
+send_regex_to_kafka(const char *service_name, const char *regex, const char *replace, tm_kafka_topic_t *regex_topic)
 {
+  if (regex == NULL || *regex == '\0') return true;
+
+  /* this should remain entirely on the stack */
+  mtev_dyn_buffer_t kafka;
+  mtev_dyn_buffer_init(&kafka);
+  mtev_dyn_buffer_ensure(&kafka, 1024);
+  mtev_dyn_buffer_add(&kafka, (uint8_t *)"{", 1);
+  /* fake the APM fields */
+  mtev_dyn_buffer_add_printf(&kafka, "\"%s\":{\"%s\": \"%s\"},", "processor", "event", "regex");
+  mtev_dyn_buffer_add_printf(&kafka, "\"context\":{\"service\":{\"name\": \"%s\"}},", service_name);
+  mtev_dyn_buffer_add_printf(&kafka, "\"regex\":\"%s\",", regex);
+  mtev_dyn_buffer_add_printf(&kafka, "\"replace\":\"%s\"", replace);
+  mtev_dyn_buffer_add(&kafka, (uint8_t *)"}", 1);
+
+  bool rval = false;
+/* #ifdef NO_PUBLISH */
+/*   mtevL(mtev_error, "Publishing off, not sending url to kafka: %s\n", url); */
+/*   rval = true; */
+/* #else */
+  /* we publish using the service name and regex as the key */
+  char key[1024];
+  size_t key_len = snprintf(key, sizeof(key), "%s|%s", service_name, regex);
+  rval = tm_kafka_produce(regex_topic, mtev_dyn_buffer_data(&kafka), mtev_dyn_buffer_used(&kafka), 
+                          key, key_len);
+/* #endif */
+  mtev_dyn_buffer_destroy(&kafka);
+  return rval;
+}
+
+
+void tm_flush_team_metrics(mtev_hash_table *teams, tm_kafka_topic_t *agg_topic, tm_kafka_topic_t *regex_topic)
+{
+  //char sum_key[4096];
   uint64_t now = mtev_now_ms();
   mtev_dyn_buffer_t json;
   mtev_dyn_buffer_t kafka;
@@ -236,6 +279,8 @@ void tm_flush_team_metrics(mtev_hash_table *teams, tm_kafka_topic_t *agg_topic)
       metric_key_t *k = (metric_key_t *)metric.key.ptr;
       metric_value_t *v = (metric_value_t *)metric.value.ptr;
 
+      bool debug_output = strncmp(k->metric_name, "transaction - request_count - all|ST[service:bdata-statsapi-analytics-prod_gke_us-east4_baseball,host:all,ip:all,method:GET]", k->key_len) == 0;
+
       /* delete when the flushed_ms >= last_seen.
        * 
        * The idea here is that we do an immediate flush but straggler data might come in 
@@ -243,6 +288,11 @@ void tm_flush_team_metrics(mtev_hash_table *teams, tm_kafka_topic_t *agg_topic)
        * but if nothing new came in for a while (10 minutes) we can delete it 
        */
       if (v->flushed_ms > 0 && v->flushed_ms >= v->last_seen && now > v->last_seen && now - v->last_seen > 600000) {
+        if (debug_output) {
+          mtevL(mtev_error, 
+                "METRIC_TS: %" PRIu64 ", flushed_ms: %" PRIu64 ", last_seen: %" PRIu64 ", now: %" PRIu64 ", deleting\n", 
+                k->timestamp, v->flushed_ms, v->last_seen, now);
+        }
         v->scheduled_for_destruction = true;
         kafka_expired_list[kafka_expired_count] = k;
         kafka_expired_count++;
@@ -250,26 +300,63 @@ void tm_flush_team_metrics(mtev_hash_table *teams, tm_kafka_topic_t *agg_topic)
       }
 
       /* otherwise, if we have already flushed this but it hasn't been 10 minutes, move along */
-      if (v->flushed_ms > 0 && v->flushed_ms >= v->last_seen) continue;
+      if (v->flushed_ms > 0 && v->flushed_ms >= v->last_seen) {
+        if (debug_output) {
+          mtevL(mtev_error, 
+                "METRIC_TS: %" PRIu64 ", flushed_ms: %" PRIu64 ", last_seen: %" PRIu64 ", now: %" PRIu64 ", skipping\n", 
+                k->timestamp, v->flushed_ms, v->last_seen, now);
+        }
+        continue;
+      }
 
 
       if (k->aggregate == false) {
         if (k->immediate_flush || ((now > k->timestamp && now - k->timestamp > 1000) && (now > v->last_seen && now - v->last_seen > 10000))) {
+          if (debug_output) {
+            mtevL(mtev_error, 
+                  "METRIC_TS: %" PRIu64 ", flushed_ms: %" PRIu64 ", last_seen: %" PRIu64 ", now: %" PRIu64 ", sending metric value: %" PRIu64 "\n", 
+                  k->timestamp, v->flushed_ms, v->last_seen, now, v->metric.integer);
+          }
+
           if (comma) {
             mtev_dyn_buffer_add(&json, (uint8_t *)",", 1);
           }
           comma = true;
 
+          /* floor to a 5 minute window */
+          /* uint64_t window = k->timestamp - (k->timestamp % 300000); */
+          /* mtev_hyperloglog_t *hll; */
+          /* if (!mtev_hash_retrieve(&td->hlls, (const char *)&window, sizeof(window), (void **)&hll)) { */
+          /*   hll = mtev_hyperloglog_alloc(14); */
+          /*   uint64_t *s = malloc(sizeof(uint64_t)); */
+          /*   *s = window; */
+          /*   mtev_hash_store(&td->hlls, (const char *)s, sizeof(window), (void *)hll); */
+          /* } */
+
           /* place the keys that we need to flush in a list for later deletion */
           json_expired_list[json_expired_count] = v;
           json_expired_count++;
 
+          //mtev_hyperloglog_add(hll, k->metric_name, strlen(k->metric_name));
           metric_to_json(&json, k, v, true, false);
+          /* if (v->type == METRIC_VALUE_TYPE_NUMBER) { */
+          /*   /\* also write the SUM under a new key *\/ */
+
+          /*   metric_key_t *sum_key = calloc(1, sizeof(metric_key_t) + k->key_len + 7); */
+          /*   memcpy(sum_key->metric_name, k->metric_name, k->key_len) */
+
+          /* } */
         }
       }
       else {
         /* for aggregates, send to kafka topic after a very short delay, they will be agged on the other side */
-        if ((now > v->last_seen && now - v->last_seen > 1000)) {
+        if ((now > v->last_seen && now - v->last_seen > 10000)) {
+          if (debug_output) {
+            mtevL(mtev_error, 
+                  "METRIC_TS: %" PRIu64 ", flushed_ms: %" PRIu64 ", last_seen: %" PRIu64 ", now: %" PRIu64 ", sending agg topic: %" PRIu64 "\n", 
+                  k->timestamp, v->flushed_ms, v->last_seen, now, v->metric.integer);
+          }
+
           mtev_dyn_buffer_reset(&kafka);
           mtev_dyn_buffer_add(&kafka, (uint8_t *)"{", 1);
           /* fake the APM fields */
@@ -279,15 +366,11 @@ void tm_flush_team_metrics(mtev_hash_table *teams, tm_kafka_topic_t *agg_topic)
 
           /* build json */
           metric_to_json(&kafka, k, v, false, true);
-          v->scheduled_for_destruction = true;
-          kafka_expired_list[kafka_expired_count] = k;
-          kafka_expired_count++;
+          reset_value(v);
 
           mtev_dyn_buffer_add(&kafka, (uint8_t *)"}", 1);
           if (send_aggregate_to_kafka(&kafka, k->metric_name, strlen(k->metric_name), td, agg_topic)) {
-            /* place the keys that we need to flush in a list for later deletion */
-            uint64_t flushed_ms = mtev_now_ms();
-            v->flushed_ms = flushed_ms;
+            v->flushed_ms = now;
           }
         }
       }
@@ -312,6 +395,48 @@ void tm_flush_team_metrics(mtev_hash_table *teams, tm_kafka_topic_t *agg_topic)
         }
       }
     }
+
+    /* 
+     * to aid in accounting for metric utilization, emit a metric to the aggregation layer
+     * that tracks the cardinality of time series seen for this team
+     */
+    /* uint64_t delete_windows[20] = {0}; */
+    /* int delete_count = 0; */
+    /* mtev_hash_iter hllit = MTEV_HASH_ITER_ZERO; */
+    /* while(mtev_hash_adv(&td->hlls, &hllit)) { */
+    /*   uint64_t window = *(uint64_t*)hllit.key.ptr; */
+    /*   if (now > window && now - window >= 900000) { */
+    /*     if (delete_count < 19) { */
+    /*       delete_windows[delete_count] = window; */
+    /*       delete_count++; */
+    /*     } */
+
+    /*     mtev_dyn_buffer_reset(&kafka); */
+    /*     mtev_dyn_buffer_add(&kafka, (uint8_t *)"{", 1); */
+    /*     /\* fake the APM fields *\/ */
+    /*     mtev_dyn_buffer_ensure(&kafka, 1024); */
+    /*     mtev_dyn_buffer_add_printf(&kafka, "\"%s\":{\"%s\": \"%s\"},", "processor", "event", "aggregate"); */
+    /*     mtev_dyn_buffer_add_printf(&kafka, "\"%s\":{},", "context"); */
+
+    /*     char card[256] = {0}; */
+    /*     sprintf(card, "time_series_cardinality|ST[team:%s,service:%s-tracemate]", name, name); */
+    /*     metric_key_t *card_key = make_metric_key(card, window); */
+    /*     card_key->aggregate = true; */
+    /*     metric_value_t *card_value = make_integer_value(mtev_hyperloglog_size((mtev_hyperloglog_t*)hllit.value.ptr)); */
+
+    /*     /\* build json *\/ */
+    /*     metric_to_json(&kafka, card_key, card_value, false, true); */
+
+    /*     mtev_dyn_buffer_add(&kafka, (uint8_t *)"}", 1); */
+    /*     send_aggregate_to_kafka(&kafka, card_key->metric_name, strlen(card_key->metric_name), td, agg_topic); */
+    /*     metric_key_free(card_key); */
+    /*     metric_value_free(card_value); */
+    /*   } */
+    /* } */
+    /* for (int i = 0; i < delete_count; i++) { */
+    /*   mtev_hash_delete(&td->hlls, (const char *)&delete_windows[i], sizeof(uint64_t), free, (NoitHashFreeFunc)mtev_hyperloglog_destroy); */
+    /* } */
+
     mtev_dyn_buffer_add(&json, (uint8_t *)"}", 1);
 
     if (journal_output_metrics(&json, json_expired_count, td->metric_submission_url)) {
@@ -326,6 +451,38 @@ void tm_flush_team_metrics(mtev_hash_table *teams, tm_kafka_topic_t *agg_topic)
       }
     }
 
+    mtev_hash_iter ps = MTEV_HASH_ITER_ZERO;
+    while(mtev_hash_adv(&td->path_squashers, &ps)) {
+      mtev_hash_table *regexes = tm_path_squasher_get_regexes((tm_path_squasher_t *)ps.value.ptr);
+      mtev_hash_iter regex = MTEV_HASH_ITER_ZERO;
+      while(mtev_hash_adv(regexes, &regex)) {
+        pcre_matcher *m = (pcre_matcher *)regex.value.ptr;
+
+        /* cross reference this regex with the stuff we already know about and don't publish
+         * if it exists in the td->squash_regexes table.  The td->squash_regexes table
+         * is only filled by reading from the kafka 'tracemate_regexes' topic which is the 
+         * source of truth.  So publishing again would just create duplicates for this service
+         */
+        mtev_hash_table *x = NULL;
+        if (mtev_hash_retrieve(&td->squash_regexes, ps.key.str, strlen(ps.key.str) + 1, (void **)&x)) {
+          if (!mtev_hash_retrieve(x, regex.key.str, strlen(regex.key.str) + 1, NULL)) {
+            /* the regex.key is the regex string itself, the ps.key is the service_name 
+             * 
+             * We are going to publish a JSON document which contains the regex and
+             * replace string as the value and the key is the service_name and regex
+             * as a concatenated striing.
+             * 
+             * The topic this is published to uses a compact strategy effectively overwriting
+             * the same regex over and over again.
+             */
+            send_regex_to_kafka(ps.key.str, regex.key.str, m->replace, regex_topic);
+          }
+        }
+      }
+      mtev_hash_destroy(regexes, free, pcre_matcher_destroy);
+    }
+
+
   next_team:
     /* iterate our list of kafka keys and remove from hash */
     for (size_t i = 0; i < kafka_expired_count; i++) {
@@ -333,6 +490,7 @@ void tm_flush_team_metrics(mtev_hash_table *teams, tm_kafka_topic_t *agg_topic)
       if (k != NULL) {
         pthread_mutex_lock(&td->mutex);
         mtev_hash_delete(&td->hash, (const char *)k, k->key_len, metric_key_free, metric_value_free);
+
         pthread_mutex_unlock(&td->mutex);
       }
     }

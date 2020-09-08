@@ -1,0 +1,28 @@
+{
+  "datapoints": [
+    {
+      "metric_type": "numeric",
+      "legend_formula": null,
+      "search": null,
+      "metric_name": "transaction - request_count - all|ST[service:{{ service_name }},host:all,ip:all]",
+      "caql": null,
+      "axis": "l",
+      "stack": null,
+      "name": "Throughput",
+      "check_id": {{ check_id }},
+      "derive": "gauge",
+      "data_formula": null,
+      "alpha": null,
+      "hidden": false,
+      "color": "#4C8BCC"
+    }
+  ],
+  "description": "Total requests per time window for a service",
+  "guides": [],
+  "line_style": "interpolated",
+  "style": "line",
+  "tags": [
+    "service:{{ service_name }}"
+  ],
+  "title": "{{ service_name }} - Throughput"
+}

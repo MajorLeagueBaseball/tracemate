@@ -1,0 +1,27 @@
+{
+  "datapoints": [
+    {
+      "axis": "l",
+      "stack": null,
+      "check_id": null,
+      "caql": "find:average(\"transaction - average_latency - /*\", \"and(service:{{ service_name }},host:all)\") | top({{ top_count }}) | label(\"%n\")",
+      "search": null,
+      "metric_type": "caql",
+      "name": "Top {{top_count}} in latency",
+      "metric_name": null,
+      "legend_formula": "=round(VAL * 1000,1)",
+      "alpha": null,
+      "data_formula": null,
+      "hidden": false,
+      "derive": "gauge",
+      "color": "#4C8BCC"
+    }
+  ],
+  "description": "Top {{top_count}} Endpoints in average response time overall for this service",
+  "line_style": "interpolated",
+  "style": "line",
+  "tags": [
+    "service:{{ service_name }}"
+  ],
+  "title": "{{ service_name }} - Top {{top_count}} Endpoints"
+}

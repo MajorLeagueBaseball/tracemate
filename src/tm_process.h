@@ -22,6 +22,7 @@
 #include <mtev_json_object.h>
 
 #include "tm_utils.h"
+#include "tm_metric.h"
 #include "tm_transaction_store.h"
 
 static inline const char *tm_service_name(mtev_json_object *m)
@@ -71,6 +72,8 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
 bool process_aggregate_message(topic_stats_t *stats, mtev_json_object *message);
 bool process_span_message(topic_stats_t *stats, mtev_json_object *message, int ttl);
 bool process_error_message(topic_stats_t *stats, mtev_json_object *message, int ttl);
+bool process_url_message(topic_stats_t *stats, mtev_json_object *message);
+bool process_regex_message(topic_stats_t *stats, mtev_json_object *message);
 
 bool process_span_message_with_root(mtev_json_object *message, tm_transaction_store_entry_t *root_span);
 bool process_error_message_with_root(mtev_json_object *message, tm_transaction_store_entry_t *root_span, int ttl);
@@ -80,5 +83,6 @@ void update_counter(team_data_t *td, mtev_hash_table *team_metrics, const char *
 void update_text(team_data_t *td, mtev_hash_table *team_metrics, const char *metric_name, const char *text, uint64_t timestamp);
 void update_numeric(team_data_t *td, mtev_hash_table *team_metrics, const char *metric_name, bool aggregate, double value, uint64_t timestamp);
 void update_average(team_data_t *td, mtev_hash_table *team_metrics, const char *metric_name, bool aggregate, double value, uint64_t timestamp);
+void reset_value(metric_value_t *value);
 
 #endif

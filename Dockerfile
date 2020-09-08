@@ -44,6 +44,7 @@ RUN  yum install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.
 RUN mkdir -p /tracemate/logs
 RUN mkdir -p /tracemate/modules
 RUN mkdir -p /tracemate/tm-web
+RUN mkdir -p /tracemate/visuals
 COPY --from=base /usr/lib64/librdkaf* /tracemate/
 COPY --from=base /usr/lib64/libxslt* /tracemate/
 COPY --from=base /tracemate/src/tm /tracemate/
@@ -51,5 +52,6 @@ COPY --from=base /tracemate/src/tm.conf /tracemate/
 COPY --from=base /tracemate/src/tm-web/ /tracemate/tm-web/
 COPY --from=base /opt/circonus/lib/ /tracemate/
 COPY --from=base /tracemate/scripts/tracemate.sh /tracemate/
+COPY --from=base /tracemate/visuals/* /tracemate/visuals/
 
 CMD ["/tracemate/tracemate.sh"]

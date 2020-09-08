@@ -1,0 +1,43 @@
+{
+  "datapoints": [
+    {
+      "axis": "l",
+      "stack": null,
+      "caql": null,
+      "check_id": {{ check_id }},
+      "search": null,
+      "name": "Average - Max Heap",
+      "metric_type": "numeric",
+      "metric_name": "jvm - memory - heap - max|ST[service:{{ service_name }},host:all,ip:all]",
+      "legend_formula": null,
+      "data_formula": null,
+      "alpha": "0.8",
+      "derive": "gauge",
+      "hidden": false,
+      "color": "#BABDC0"
+    },
+    {
+      "alpha": "0.8",
+      "data_formula": null,
+      "hidden": false,
+      "derive": "gauge",
+      "color": "#4BB4D4",
+      "search": null,
+      "metric_type": "numeric",
+      "name": "Average - Used Heap",
+      "metric_name": "jvm - memory - heap - used|ST[service:{{ service_name }},host:all,ip:all]",
+      "legend_formula": null,
+      "stack": null,
+      "check_id": {{ check_id }},
+      "caql": null,
+      "axis": "l"
+    }
+  ],
+  "description": "JVM Max and used heap averages across all instances",
+  "line_style": "interpolated",
+  "style": "area",
+  "tags": [
+    "service:{{ service_name }}"
+  ],
+  "title": "{{ service_name }} - JVM Memory Stats"
+}

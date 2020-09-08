@@ -34,7 +34,7 @@ static pthread_mutex_t jlog_write_mutex;
 static const char *journal_path;
 static pthread_t sender_thread;
 
-static size_t send_metric_output(void *contents, size_t size, size_t nmemb, void *closure)
+static size_t curl_output(void *contents, size_t size, size_t nmemb, void *closure)
 {
   mtev_dyn_buffer_t *buffer = (mtev_dyn_buffer_t *)closure;
   if (buffer) {
@@ -126,14 +126,14 @@ send_thread(void *arg)
             uint64_t now = mtev_now_ms();
             uint64_t total_skew = 0;
             do_checkpoint = true;
-            mtevL(mtev_error, "Sending to url: %s\n", metric_submission_url);
+            mtevL(mtev_debug, "Sending to url: %s\n", metric_submission_url);
             mtev_json_object_object_foreach(o, key, m) {
               c++;
               if (m) {
                 mtev_json_object *ts = mtev_json_object_object_get(m, "_ts");
                 if (ts) {
                   uint64_t mts = mtev_json_object_get_uint64(ts);
-                  mtevL(tm_error, "Now: %" PRIu64 ", TS: %" PRIu64 ", Skew: %" PRIu64 "ms, key: %s\n", now, mts, now - mts, key);
+                  mtevL(tm_debug, "Now: %" PRIu64 ", TS: %" PRIu64 ", Skew: %" PRIu64 "ms, key: %s\n", now, mts, now - mts, key);
                   total_skew += (now - mts);
                 }
               }
@@ -170,14 +170,14 @@ send_thread(void *arg)
             curl_easy_setopt(curl, CURLOPT_READFUNCTION, send_metric_input);
             curl_easy_setopt(curl, CURLOPT_READDATA, &sd);
             curl_easy_setopt(curl, CURLOPT_INFILESIZE_LARGE, (curl_off_t)len);
-            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, send_metric_output);
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_output);
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_buffer);
             curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errors);
             curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
             curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
             curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
             curl_easy_setopt(curl, CURLOPT_EXPECT_100_TIMEOUT_MS, 500L);
-            curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, send_metric_output);
+            curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, curl_output);
             curl_easy_setopt(curl, CURLOPT_HEADERDATA, &header_buffer);
 
             list = curl_slist_append(list, "Content-Type: application/json");
@@ -399,4 +399,76 @@ send_infra_metrics(const char *infra_dest_url, stats_recorder_t *global_stats_re
   mtev_dyn_buffer_destroy(&buffer);
 }
 
+bool
+circonus_curl_get(const char *api_key, mtev_dyn_buffer_t *response, const char *url, const char *search)
+{
+  char resolved_url[4096];
+  char errors[CURL_ERROR_SIZE];
+  char header[256];
 
+  snprintf(resolved_url, sizeof(resolved_url), url, search);
+
+  CURL *curl = curl_easy_init();
+
+  struct curl_slist *list = NULL;
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 10000L);
+  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+  curl_easy_setopt(curl, CURLOPT_URL, resolved_url);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_output);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
+  curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errors);
+  curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+
+  snprintf(header, sizeof(header), "X-Circonus-Auth-Token: %s", api_key);
+  list = curl_slist_append(list, header);
+  list = curl_slist_append(list, "X-Circonus-App-Name: tracemate");
+  list = curl_slist_append(list, "Accept: application/json");
+  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, list);
+
+  CURLcode res = curl_easy_perform(curl);
+  curl_easy_cleanup(curl);
+  curl_slist_free_all(list);
+  return res == CURLE_OK;
+}
+
+
+bool
+circonus_curl_post(const char *api_key, mtev_dyn_buffer_t *response, const char *url, const char *contents)
+{
+  char header[256];
+  char errors[CURL_ERROR_SIZE];
+  CURL *curl = curl_easy_init();
+
+  struct curl_slist *list = NULL;
+  size_t len = strlen(contents);
+  struct send_data sd =
+    {
+     .json = contents,
+     .len = len,
+     .sent = 0
+    };
+
+  curl_easy_setopt(curl, CURLOPT_URL, url);
+  curl_easy_setopt(curl, CURLOPT_POST, 1L);
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, len);
+  curl_easy_setopt(curl, CURLOPT_READFUNCTION, send_metric_input);
+  curl_easy_setopt(curl, CURLOPT_READDATA, &sd);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_output);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
+  curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errors);
+  curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+
+  snprintf(header, sizeof(header), "X-Circonus-Auth-Token: %s", api_key);
+  list = curl_slist_append(list, "Accept: application/json");
+  list = curl_slist_append(list, "User-Agent: tracemate");
+  list = curl_slist_append(list, header);
+  list = curl_slist_append(list, "X-Circonus-App-Name: tracemate");
+  list = curl_slist_append(list, "Content-Type: application/json");
+  list = curl_slist_append(list, "Accept: application/json");
+  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, list);
+
+  CURLcode res = curl_easy_perform(curl);
+  curl_easy_cleanup(curl);
+  curl_slist_free_all(list);
+  return res == CURLE_OK;
+}

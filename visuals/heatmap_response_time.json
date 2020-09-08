@@ -1,0 +1,44 @@
+{
+  "datapoints": [
+    {
+      "hidden": false,
+      "color": "#4C8BCC",
+      "name": "Heatmap Transaction Latency - GET (ms)",
+      "derive": "gauge",
+      "check_id": {{ check_id }},
+      "data_formula": "=VAL*1000",
+      "alpha": "1",
+      "search": null,
+      "metric_name": "transaction - latency - all|ST[service:{{ service_name }},host:all,ip:all,method:GET]",
+      "axis": "l",
+      "caql": null,
+      "stack": 0,
+      "legend_formula": "=round(VAL,1)",
+      "metric_type": "histogram"
+    },
+    {
+      "hidden": false,
+      "color": "#8FB4D5",
+      "check_id": {{ check_id }},
+      "derive": "gauge",
+      "name": "Heatmap Transaction Latency - POST (ms)",
+      "alpha": "1",
+      "data_formula": "=VAL*1000",
+      "search": null,
+      "metric_name": "transaction - latency - all|ST[service:{{ service_name }},host:all,ip:all,method:POST]",
+      "stack": 0,
+      "axis": "l",
+      "caql": null,
+      "metric_type": "histogram",
+      "legend_formula": "=round(VAL,1)"
+    }
+  ],
+  "description": "Heatmap of response time overall for this service",
+  "line_style": "interpolated",
+  "notes": "Latencies are in milliseconds",
+  "style": "area",
+  "tags": [
+    "service:{{ service_name }}"
+  ],
+  "title": "{{ service_name }} - Heatmap of Response Time"
+}

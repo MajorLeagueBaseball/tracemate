@@ -1,0 +1,27 @@
+{
+  "datapoints": [
+    {
+      "axis": "l",
+      "name": "APM Error count",
+      "color": "#4BB4D4",
+      "hidden": false,
+      "metric_name": "transaction - apm_error_count - all|ST[service:{{ service_name }},host:all,ip:all]",
+      "alpha": null,
+      "data_formula": null,
+      "derive": "gauge",
+      "stack": null,
+      "legend_formula": null,
+      "metric_type": "numeric",
+      "check_id": {{ check_id }},
+      "caql": null,
+      "search": null
+    }
+  ],
+  "description": "Total reported APM errors",
+  "line_style": "interpolated",
+  "style": "line",
+  "tags": [
+    "service:{{ service_name }}"
+  ],
+  "title": "{{ service_name }} - Error rate"
+}

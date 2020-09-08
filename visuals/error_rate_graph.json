@@ -1,0 +1,75 @@
+{
+  "datapoints": [
+    {
+      "name": "Server Error Rate - GET",
+      "axis": "l",
+      "color": "#4C8BCC",
+      "hidden": false,
+      "metric_name": "transaction - server_error_count - all|ST[service:{{ service_name }},host:all,ip:all,method:GET]",
+      "alpha": null,
+      "data_formula": null,
+      "derive": "gauge",
+      "stack": null,
+      "metric_type": "numeric",
+      "legend_formula": null,
+      "search": null,
+      "caql": null,
+      "check_id": {{ check_id }}
+    },
+    {
+      "check_id": {{ check_id }},
+      "caql": null,
+      "search": null,
+      "legend_formula": null,
+      "metric_type": "numeric",
+      "derive": "gauge",
+      "stack": null,
+      "data_formula": null,
+      "metric_name": "transaction - server_error_count - all|ST[service:{{ service_name }},host:all,ip:all,method:POST]",
+      "alpha": null,
+      "hidden": false,
+      "color": "#8FB4D5",
+      "axis": "l",
+      "name": "Server Error Rate - POST"
+    },
+    {
+      "derive": "gauge",
+      "stack": null,
+      "legend_formula": null,
+      "metric_type": "numeric",
+      "caql": null,
+      "check_id": {{ check_id }},
+      "search": null,
+      "axis": "l",
+      "name": "Client Error Rate - GET",
+      "color": "#BABDC0",
+      "hidden": false,
+      "data_formula": null,
+      "metric_name": "transaction - client_error_count - all|ST[service:{{ service_name }},host:all,ip:all,method:GET]",
+      "alpha": null
+    },
+    {
+      "stack": null,
+      "derive": "gauge",
+      "metric_type": "numeric",
+      "legend_formula": null,
+      "search": null,
+      "caql": null,
+      "check_id": {{ check_id }},
+      "axis": "l",
+      "name": "Client Error Rate - POST",
+      "color": "#BABDC0",
+      "hidden": false,
+      "metric_name": "transaction - client_error_count - all|ST[service:{{ service_name }},host:all,ip:all,method:POST]",
+      "data_formula": null,
+      "alpha": null
+    }
+  ],
+  "description": "Total errors (http status_code >= 400) per time window for a service",
+  "line_style": "interpolated",
+  "style": "line",
+  "tags": [
+    "service:{{ service_name }}"
+  ],
+  "title": "{{ service_name }} - Error rate"
+}

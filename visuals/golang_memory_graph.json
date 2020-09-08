@@ -1,0 +1,27 @@
+{
+  "datapoints": [
+    {
+      "alpha": "0.8",
+      "data_formula": null,
+      "hidden": false,
+      "derive": "gauge",
+      "color": "#4BB4D4",
+      "search": null,
+      "metric_type": "numeric",
+      "name": "Average - Used Heap",
+      "metric_name": "golang - memory - heap - used|ST[service:{{ service_name }},host:all,ip:all]",
+      "legend_formula": null,
+      "stack": null,
+      "check_id": {{ check_id }},
+      "caql": null,
+      "axis": "l"
+    }
+  ],
+  "description": "Golang used heap averages across all instances",
+  "line_style": "interpolated",
+  "style": "area",
+  "tags": [
+    "service:{{ service_name }}"
+  ],
+  "title": "{{ service_name }} - Golang Memory Stats"
+}

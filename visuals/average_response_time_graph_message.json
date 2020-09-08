@@ -1,0 +1,28 @@
+{
+  "datapoints": [
+    {
+      "check_id": {{ check_id }},
+      "caql": null,
+      "stack": null,
+      "axis": "l",
+      "derive": "gauge",
+      "hidden": false,
+      "data_formula": "=VAL*1000",
+      "alpha": "0.8",
+      "color": "#BABDC0",
+      "name": "Average Transaction Latency (ms)",
+      "metric_type": "numeric",
+      "search": null,
+      "legend_formula": "=round(VAL,1)",
+      "metric_name": "transaction - average_latency - all|ST[service:{{ service_name }},host:all,ip:all]"
+    }
+  ],
+  "description": "Average response time overall for this service",
+  "line_style": "stepped",
+  "notes": "Latencies are in milliseconds",
+  "style": "area",
+  "tags": [
+    "service:{{ service_name }}"
+  ],
+  "title": "{{ service_name }} - Average Response Time"
+}

@@ -1,0 +1,76 @@
+{
+  "datapoints": [
+    {
+      "axis": "l",
+      "caql": null,
+      "check_id": {{ check_id }},
+      "stack": null,
+      "metric_type": "numeric",
+      "name": "Average DB Latency (ms)",
+      "search": null,
+      "legend_formula": "=round(VAL,1)",
+      "metric_name": "db - average_latency - all|ST[service:{{ service_name }},host:all,ip:all]",
+      "derive": "gauge",
+      "hidden": false,
+      "alpha": "0.8",
+      "data_formula": "=VAL*1000",
+      "color": "#4C8BCC"
+    },
+    {
+      "stack": null,
+      "check_id": {{ check_id }},
+      "caql": null,
+      "axis": "l",
+      "alpha": "0.8",
+      "data_formula": "=VAL*1000",
+      "hidden": false,
+      "derive": "gauge",
+      "color": "#8FB4D5",
+      "search": null,
+      "metric_type": "numeric",
+      "name": "Average External Call Latency (ms)",
+      "metric_name": "external - average_latency - all|ST[service:{{ service_name }},host:all,ip:all]",
+      "legend_formula": "=round(VAL,1)"
+    },
+    {
+      "axis": "l",
+      "caql": null,
+      "check_id": {{ check_id }},
+      "stack": null,
+      "legend_formula": "=round(VAL,1)",
+      "metric_name": "transaction - average_latency - all|ST[service:{{ service_name }},host:all,ip:all,method:GET]",
+      "metric_type": "numeric",
+      "name": "Average Transaction Latency - GET (ms)",
+      "search": null,
+      "color": "#BABDC0",
+      "derive": "gauge",
+      "hidden": false,
+      "data_formula": "=VAL*1000",
+      "alpha": "0.8"
+    },
+    {
+      "stack": null,
+      "caql": null,
+      "check_id": {{ check_id }},
+      "axis": "l",
+      "color": "#4BB4D4",
+      "alpha": "0.8",
+      "data_formula": "=VAL*1000",
+      "hidden": false,
+      "derive": "gauge",
+      "metric_name": "transaction - average_latency - all|ST[service:{{ service_name }},host:all,ip:all,method:POST]",
+      "legend_formula": "=round(VAL,1)",
+      "search": null,
+      "name": "Average Transaction Latency - POST (ms)",
+      "metric_type": "numeric"
+    }
+  ],
+  "description": "Average response time overall for this service",
+  "line_style": "stepped",
+  "notes": "Latencies are in milliseconds",
+  "style": "area",
+  "tags": [
+    "service:{{ service_name }}"
+  ],
+  "title": "{{ service_name }} - Average Response Time"
+}
