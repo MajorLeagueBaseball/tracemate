@@ -172,7 +172,7 @@
             <regex regex="(\/?[\w@]+[ \.-]{1,}[^\/]+)$" replace="/{file}" />
             ...
           </path_rewrites>
-        </team
+        </team>
         ...
       </teams>
 
@@ -192,8 +192,11 @@
         "jaeger_dest_url" is where we send trace data (gRPC protobuf)
         "collect_host_level_metrics" controls whether tracemate generates metrics for each host as well as global metrics.
           This defaults to false if you omit it.
+        "circonus_api_key" is the API key Tracemate will use to generate graphs and dashboards for the team
+        "check_id" is the trap / json push check id that Tracemate should generate graphs for. This will be the numeric 
+          check id associated with the above metric_submission_url
     -->
-    <team name="myteam" metric_submission_url="https://api.circonus.com/module/httptrap/c10874ff-63a2-4f74-8a2d-0c2e5b87be5b/mys3cr3t" jaeger_dest_url="your-jaeger-collector:14250" collect_host_level_metrics="false">
+    <team name="myteam" metric_submission_url="https://api.circonus.com/module/httptrap/c10874ff-63a2-4f74-8a2d-0c2e5b87be5b/mys3cr3t" jaeger_dest_url="your-jaeger-collector:14250" collect_host_level_metrics="false" circonus_api_key="example-api-key" check_id="example-numeric-check-id-associated-with-http-trap-check">
       <path_allowlist>
         <path>/</path>
       </path_allowlist>
