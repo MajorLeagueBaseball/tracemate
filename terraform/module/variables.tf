@@ -78,7 +78,3 @@ variable "circonus_color_palette" {
     "#9E75AD"
   ]
 }
-
-variable "jaeger_base_url" {
-  type = string
-}

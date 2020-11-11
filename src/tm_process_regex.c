@@ -25,7 +25,26 @@ escape_regex(const char *regex)
 bool process_regex_message(topic_stats_t *stats, mtev_json_object *message)
 {
   char team[128];
-  const char *service_name = tm_service_name(message);
+  /* this is not a traditional elastic apm document */
+  mtev_json_object *context = mtev_json_object_object_get(message, "context");
+  if (context == NULL) {
+    mtevL(tm_error, "Failed to get context from regex message\n");
+    return false;
+  }
+  mtev_json_object *service = mtev_json_object_object_get(context, "service");
+  if (service == NULL) {
+    mtevL(tm_error, "Failed to get service from context\n");
+    return false;
+  }
+
+  mtev_json_object *name = mtev_json_object_object_get(service, "name");
+  if (name == NULL) {
+    mtevL(tm_error, "Failed to get name from service\n");
+    return false;
+  }
+
+  const char *service_name = mtev_json_object_get_string(name);
+
   if (!tm_get_team(service_name, team)) {
     mtevL(tm_error, "Failed to get team name\n");
     return false;

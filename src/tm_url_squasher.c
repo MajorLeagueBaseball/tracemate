@@ -286,14 +286,14 @@ recurse_regex(mtev_hash_table *t, tm_path_squasher_t *ps, node_t *node, ck_stack
     }
   }
   if (EOL) {
-    ck_stack_t stack = CK_STACK_INITIALIZER;
+    ck_stack_t stack2 = CK_STACK_INITIALIZER;
     node_t *p = node;
     bool produce_regex = false;
     while(p) {
       if (p->children_squashed) produce_regex = true;
       struct stacker *s = calloc(1, sizeof(struct stacker));
       s->node = p;
-      ck_stack_push_upmc(&stack, &s->entry);
+      ck_stack_push_upmc(&stack2, &s->entry);
       p = p->parent;
     }
 
@@ -305,7 +305,7 @@ recurse_regex(mtev_hash_table *t, tm_path_squasher_t *ps, node_t *node, ck_stack
 
     if (produce_regex) {
       strcat(regex, "(");
-      while ((e = ck_stack_pop_upmc(&stack)) != NULL) {
+      while ((e = ck_stack_pop_upmc(&stack2)) != NULL) {
         struct stacker *s = (struct stacker *)e;
         if (s->node == ps->root_node) {
           free(s);
@@ -337,6 +337,11 @@ recurse_regex(mtev_hash_table *t, tm_path_squasher_t *ps, node_t *node, ck_stack
       pcrem->extra = pcre_study(pcrem->match, 0, &pcre_err);
       pcrem->replace = strdup(replace);
       mtev_hash_store(t, strdup(regex), strlen(regex) + 1, pcrem);
+    }
+    /* if we didn't produce a regex, clean up this stack */
+    while ((e = ck_stack_pop_upmc(&stack2)) != NULL) {
+      struct stacker *s = (struct stacker *)e;
+      free(s);
     }
   }
 }

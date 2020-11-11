@@ -44,6 +44,7 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
   char agg_tag_string[2048];
   char team[128];
   char sc[32];
+  char *clean_path = NULL;
   uint64_t timestamp;
   mtev_hash_table *team_metrics = pre_process(message, team, tag_string, &timestamp);
   team_data_t *td = get_team_data(team);
@@ -73,33 +74,14 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
   RETURN_IF_MISSING(trace_id_json, trace_json, "id");
   const char *trace_id = mtev_json_object_get_string(trace_id_json);
 
-  RETURN_IF_MISSING(context, message, "context");
-  RETURN_IF_MISSING(service, context, "service");
-  RETURN_IF_MISSING(service_name, service, "name");
-  char *clean_path = NULL;
-  const char *service_string = NULL;
-  if (service_name) {
-    service_string = mtev_json_object_get_string(service_name);
+  const char *service_string = tm_service_name(message);
+  if (service_string == NULL) {
+    mtevL(tm_error, "'transaction' event is malformed, service name missing\n");
+    stats_add64(stats->messages_errored, 1);
+    return false;
   }
 
-  mtev_boolean debug_transaction = mtev_false;
-  /* if (strncmp("bdata-binapi-statcast", service_string, 21) == 0) { */
-  /*   debug_transaction = mtev_true; */
-  /* } */
-
-  if (debug_transaction == mtev_true) {
-    mtevL(tm_error, "TRANSACTION for: %s\n\n%s", service_string, mtev_json_object_to_json_string(message));
-  }
-
-  mtev_json_object *processed = mtev_json_object_object_get(message, "tracemate_processed");
-  if (processed != NULL) {
-    if (mtev_json_object_get_boolean(processed)) {
-      if (debug_transaction == mtev_true) {
-        mtevL(tm_error, "already processed, skipping to jaeger: %s\n", service_string);
-      }
-      goto process_jaeger;
-    }
-  }
+  mtevL(tm_debug, "TRANSACTION for: %s\n\n%s", service_string, mtev_json_object_to_json_string(message));
 
   /* certain high cardinality metrics can contain a special tag that prevents them from being rolled up
    * for longer term storage
@@ -109,10 +91,6 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
     rollup = ",__rollup:false";
   }
 
-  //stackdriver_transaction(message, "cloudtrace.googleapis.com:443");
-
-  /* process this transaction for histogramming, we *always* histogram at the parent transaction level,
-   */
   const char *type = mtev_json_object_get_string(mtev_json_object_object_get(trans, "type"));
 
   if (strcmp(type, "message_read") == 0 || strcmp(type, "messaging") == 0) {
@@ -126,10 +104,9 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
     uint64_t agg_timestamp = ceil_timestamp(timestamp);
     const char *name = mtev_json_object_get_string(mtev_json_object_object_get(trans, "name"));
 
-    /* average latency for this service and URL */
+    /* average latency for this service and transaction name */
     snprintf(metric_name, sizeof(metric_name) - 1, "transaction - latency - %s|ST[%s]",
              name, agg_tag_string);
-
     update_histogram(td, team_metrics, metric_name, true, duration_us, agg_timestamp);
 
     /* average latency for the service */
@@ -210,83 +187,108 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
      * Instead, build the name based on the context.request.method, and the context.url.pathname
      */
 
+    mtev_json_object *sampled = mtev_json_object_object_get(trans, "sampled");
+    if (mtev_json_object_get_boolean(sampled) == false) {
+      mtevL(tm_error, "'transaction' event is malformed, 'sampled' is false, something is misconfigured: %s:%s\n", service_string, trace_id);
+      stats_add64(stats->messages_errored, 1);
+      return false;
+    }
+
+    int mv = tm_apm_server_major_version(message);
+    mtev_json_object *context = NULL;
+    if (mv == 6) {
+      context = mtev_json_object_object_get(message, "context");
+      if (context == NULL) {
+        mtevL(tm_error, "'transaction' event is malformed, missing 'context' object: %s:%s\n", service_string, trace_id);
+        stats_add64(stats->messages_errored, 1);
+        return false;
+      }
+    } else if (mv > 6) {
+      context = mtev_json_object_object_get(message, "http");
+      if (context == NULL) {
+        mtevL(tm_error, "'transaction' event is malformed, missing 'http' object: %s:%s\n", service_string, trace_id);
+        stats_add64(stats->messages_errored, 1);
+        return false;
+      }
+    }
+
     mtev_json_object *req = mtev_json_object_object_get(context, "request");
     mtev_json_object *resp = mtev_json_object_object_get(context, "response");
     if (req == NULL || resp == NULL) {
       mtevL(tm_error, "Transaction missing request or response object: %s:%s\n", service_string, trace_id);
-      if (debug_transaction == mtev_true) {
-        mtevL(tm_error, "malformed, missing request or response: %s\n", service_string);
-      }
       stats_add64(stats->messages_errored, 1);
       return false;
     }
     mtev_json_object *status_code = mtev_json_object_object_get(resp, "status_code");
     mtev_json_object *method = mtev_json_object_object_get(req, "method");
-    mtev_json_object *url = mtev_json_object_object_get(req, "url");
-    mtev_json_object *path = mtev_json_object_object_get(url, "pathname");
+    mtev_json_object *url = NULL;
+    mtev_json_object *path = NULL;
+    if (mv == 6) {
+      url = mtev_json_object_object_get(req, "url");
+      path = mtev_json_object_object_get(url, "pathname");
+    } else if (mv > 6) {
+      url = mtev_json_object_object_get(message, "url");
+      path = mtev_json_object_object_get(url, "path");
+    }
 
+    char METHOD[16] = {0};
     const char *meth = mtev_json_object_get_string(method);
-    if (strcmp(meth, "OPTIONS") == 0) {
+    for (int i = 0; i < strlen(meth); i++) {
+      METHOD[i] = toupper(meth[i]);
+    }
+    if (strcmp(METHOD, "OPTIONS") == 0) {
       stats_add64(stats->messages_filtered, 1);
       return false;
     }
 
     if (!is_path_ok(mtev_json_object_get_string(path), td)) {
-      if (debug_transaction == mtev_true) {
-        mtevL(tm_error, "malformed, path not allowed: %s, %s\n", service_string, mtev_json_object_get_string(path));
-      }
+      mtevL(tm_debug, "malformed, path not allowed: %s, %s\n", service_string, mtev_json_object_get_string(path));
       stats_add64(stats->messages_filtered, 1);
       return false;
     }
 
     int stat_code = mtev_json_object_get_int(status_code);
-    if (stat_code == 404) {
-
-      if (debug_transaction == mtev_true) {
-        mtevL(tm_error, "malformed, 404, not tracking: %s, %s\n", service_string, mtev_json_object_get_string(path));
-      }
-      /* Don't bother tracking stats on URLs that don't exist */
-      stats_add64(stats->messages_filtered, 1);
-      return false;
-    }
+    /* if (stat_code == 404) { */
+    /*   mtevL(tm_debug, "404, not tracking: %s, %s\n", service_string, mtev_json_object_get_string(path)); */
+    /*   /\* Don't bother tracking stats on URLs that don't exist *\/ */
+    /*   stats_add64(stats->messages_filtered, 1); */
+    /*   return false; */
+    /* } */
 
     /* remove any GUIDS or integers from the path to genericize it */
     clean_path = genericize_path(service_string, mtev_json_object_get_string(path), td);
 
-    /* build aggregate metrics, this replaces host specific info with `all` */
     uint64_t agg_timestamp = ceil_timestamp(timestamp);
 
     /* average latency for this service and URL */
     snprintf(metric_name, sizeof(metric_name) - 1, "transaction - latency - %s|ST[%s,method:%s%s]",
-             clean_path, agg_tag_string, mtev_json_object_get_string(method), rollup);
-
+             clean_path, agg_tag_string, METHOD, rollup);
     update_histogram(td, team_metrics, metric_name, true, duration_us, agg_timestamp);
 
     /* average latency for the service */
     snprintf(metric_name, sizeof(metric_name) - 1, "transaction - latency - all|ST[%s,method:%s]",
-             agg_tag_string, mtev_json_object_get_string(method));
-
+             agg_tag_string, METHOD);
     update_histogram(td, team_metrics, metric_name, true, duration_us, agg_timestamp);
 
     if (stat_code >= 400 && stat_code < 500) {
       /* client error count for the service and URL */
       snprintf(metric_name, sizeof(metric_name) - 1, "transaction - client_error_count - %s|ST[%s,method:%s%s]",
-               clean_path, agg_tag_string, mtev_json_object_get_string(method), rollup);
+               clean_path, agg_tag_string, METHOD, rollup);
 
       update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
       snprintf(metric_name, sizeof(metric_name) - 1, "transaction - error_count - %s|ST[%s,method:%s%s]",
-               clean_path, agg_tag_string, mtev_json_object_get_string(method), rollup);
+               clean_path, agg_tag_string, METHOD, rollup);
 
       update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
       snprintf(metric_name, sizeof(metric_name) - 1, "transaction - client_error_count - all|ST[%s,method:%s]",
-               agg_tag_string, mtev_json_object_get_string(method));
+               agg_tag_string, METHOD);
 
       update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
       snprintf(metric_name, sizeof(metric_name) - 1, "transaction - error_count - all|ST[%s,method:%s]",
-               agg_tag_string, mtev_json_object_get_string(method));
+               agg_tag_string, METHOD);
 
       update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
@@ -295,49 +297,47 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
 
       /* client error count for the service and URL */
       snprintf(metric_name, sizeof(metric_name) - 1, "transaction - server_error_count - %s|ST[%s,method:%s%s]",
-               clean_path, agg_tag_string, mtev_json_object_get_string(method), rollup);
+               clean_path, agg_tag_string, METHOD, rollup);
 
       update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
       snprintf(metric_name, sizeof(metric_name) - 1, "transaction - error_count - %s|ST[%s,method:%s%s]",
-               clean_path, agg_tag_string, mtev_json_object_get_string(method),rollup);
+               clean_path, agg_tag_string, METHOD,rollup);
 
       update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
       snprintf(metric_name, sizeof(metric_name) - 1, "transaction - server_error_count - all|ST[%s,method:%s]",
-               agg_tag_string, mtev_json_object_get_string(method));
+               agg_tag_string, METHOD);
 
       update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
       snprintf(metric_name, sizeof(metric_name) - 1, "transaction - error_count - all|ST[%s,method:%s]",
-               agg_tag_string, mtev_json_object_get_string(method));
+               agg_tag_string, METHOD);
 
       update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
     }
 
     /* request count for the service and URL */
     snprintf(metric_name, sizeof(metric_name) - 1, "transaction - request_count - %s|ST[%s,method:%s%s]",
-             clean_path, agg_tag_string, mtev_json_object_get_string(method),rollup);
+             clean_path, agg_tag_string, METHOD,rollup);
     update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
     snprintf(metric_name, sizeof(metric_name) - 1, "transaction - request_count - all|ST[%s,method:%s]",
-             agg_tag_string, mtev_json_object_get_string(method));
+             agg_tag_string, METHOD);
     update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
     /* while we are here, we generate a text metric for the http response code from this transaction */
     if (td->collect_host_level_metrics) {
       snprintf(metric_name, sizeof(metric_name) - 1, "transaction - status_code - %s|ST[%s,method:%s%s]",
-               clean_path, tag_string, mtev_json_object_get_string(method),rollup);
+               clean_path, tag_string, METHOD,rollup);
       snprintf(sc, sizeof(sc), "%d", stat_code);
       update_text(td, team_metrics, metric_name, sc, timestamp);
 
       /* reuse metric_name for the latency metric name of this metric is the method and the clean_path */
       snprintf(metric_name, sizeof(metric_name) - 1, "transaction - latency - %s|ST[%s,method:%s%s]",
-               clean_path, tag_string, mtev_json_object_get_string(method),rollup);
+               clean_path, tag_string, METHOD, rollup);
 
-      /* round it down to the minute */
-      timestamp = ceil_timestamp(timestamp);
-      update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
+      update_histogram(td, team_metrics, metric_name, true, duration_us, agg_timestamp);
     }
   } else if (strcmp(type, "page-load") == 0) {
 
@@ -355,6 +355,7 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
      * Instead, build the name based on the context.page.url
      */
 
+#if 0
     mtev_json_object *page = mtev_json_object_object_get(context, "page");
     //mtev_json_object *marks = mtev_json_object_object_get(trans, "marks");
     if (page) {
@@ -400,6 +401,7 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
       update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
     }
+#endif
   } else {
     mtevL(tm_debug, "Unknown transaction type: %s\n", type);
   }
@@ -415,78 +417,40 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
    *
    * If this arrives without a parent.id, assume it is root trans and save under trace.id
    */
- process_jaeger:
-  {
-    if (trace_transaction_hook_invoke(message) == MTEV_HOOK_ABORT) {
-      free(clean_path);
-      return false;
-    }
-
-    bool trace = false;
-    mtev_json_object *parent = mtev_json_object_object_get(message, "parent");
-    if (parent) {
-      tm_transaction_store_add_child(trace_id, strlen(trace_id), message, ttl);
-    } else {
-      /* this is the root_span */
-      const char *thresh_name = NULL;
-      if (service_name) {
-        thresh_name = mtev_json_object_get_string(service_name);
-      }
-
-      uint64_t threshold_us = get_jaeger_threshold_us(thresh_name);
-      if (duration_us >= threshold_us && trace == false) {
-        mtevL(tm_debug, "Transaction over threshold: %s, %" PRIu64 " > %" PRIu64 "\n", trace_id, duration_us, threshold_us);
-        /* process this transaction for jaegerizing */
-
-        /* flag this trans so it's children will be traced */
-        trace = true;
-      }
-
-      mtev_json_object *apm_t = mtev_json_object_new_object();
-      mtev_json_object_object_add(apm_t, "transaction", mtev_json_object_get(message));
-      if (clean_path != NULL) {
-        mtev_json_object_object_add(apm_t, "url", mtev_json_object_new_string(clean_path));
-      } else {
-        mtev_json_object_object_add(apm_t, "url", mtev_json_object_new_string("none"));
-      }
-
-      tm_transaction_store_entry_t entry;
-      entry.first_seen_ms = mtev_now_ms();
-      entry.last_modified_ms = mtev_now_ms();
-      entry.trace = trace;
-      entry.data = apm_t;
-
-      tm_transaction_store_put(trace_id, strlen(trace_id), &entry, ttl);
-
-      /* deal with spans that arrived before the root_span arrived */
-      tm_transaction_store_entry_t *children = NULL;
-      size_t child_count = tm_transaction_store_get_children(trace_id, strlen(trace_id), &children);
-      if (child_count > 0) {
-        mtevL(tm_debug, "Transaction %s arrived late, processing %zu children\n", trace_id, child_count);
-      }
-      for (size_t i = 0; i < child_count; i++) {
-        // get type of object.
-        mtev_json_object *processor = mtev_json_object_object_get(children[i].data, "processor");
-        if (!processor) {
-          mtevL(tm_error, "Invalid elastic APM data, missing \"processor\" object\n");
-          stats_add64(stats->messages_errored, 1);
-          mtev_json_object_put(children[i].data);
-          continue;
-        }
-        const char *event = mtev_json_object_get_string(mtev_json_object_object_get(processor, "event"));
-        mtevL(tm_debug, "Processing event: %s\n", event);
-        if (strcmp(event, "span") == 0) {
-          process_span_message_with_root(children[i].data, &entry);
-        } else if (strcmp(event, "error") == 0) {
-          process_error_message_with_root(children[i].data, &entry, ttl);
-        }
-        mtev_json_object_put(children[i].data);
-      }
-      free(children);
-      mtev_json_object_put(entry.data);
-    }
+  if (trace_transaction_hook_invoke(message) == MTEV_HOOK_ABORT) {
     free(clean_path);
+    return false;
   }
+
+  mtev_json_object *parent = mtev_json_object_object_get(message, "parent");
+  if (parent) {
+    tm_transaction_store_add_child(trace_id, strlen(trace_id), message, ttl);
+  } else {
+    uint64_t threshold_us = get_jaeger_threshold_us(service_string);
+    if (duration_us >= threshold_us) {
+      mtevL(tm_debug, "Transaction over threshold: %s, %" PRIu64 " > %" PRIu64 "\n", trace_id, duration_us, threshold_us);
+      /* flag this trans so it and its children will be traced */
+      tm_transaction_store_mark_traceable(trace_id, strlen(trace_id));
+    }
+
+    mtev_json_object *apm_t = mtev_json_object_new_object();
+    mtev_json_object_object_add(apm_t, "transaction", mtev_json_object_get(message));
+    if (clean_path != NULL) {
+      mtev_json_object_object_add(apm_t, "url", mtev_json_object_new_string(clean_path));
+    } else {
+      mtev_json_object_object_add(apm_t, "url", mtev_json_object_new_string("none"));
+    }
+
+    tm_transaction_store_entry_t entry;
+    entry.first_seen_ms = mtev_now_ms();
+    entry.last_modified_ms = mtev_now_ms();
+    entry.data = apm_t;
+
+    tm_transaction_store_put(trace_id, strlen(trace_id), &entry, ttl);
+
+    mtev_json_object_put(entry.data);
+  }
+  free(clean_path);
   return false;
 }
 

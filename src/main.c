@@ -394,10 +394,12 @@ tm_init()
   /* init the transaction store */
   char *tdb_path = "/tracemate/data/ts";
   uint64_t db_size = 5000000000;
+  mtev_boolean bloom_filter = mtev_false;
   mtev_conf_get_int32(MTEV_CONF_ROOT, "/tm/transaction_db/@lookback_seconds", &transaction_lookback_secs);
   mtev_conf_get_string(MTEV_CONF_ROOT, "/tm/transaction_db/@path", &tdb_path);
   mtev_conf_get_uint64(MTEV_CONF_ROOT, "/tm/transaction_db/@initial_size", &db_size);
-  tm_transaction_store_init(TM_TRANSACTION_STORE_TYPE_LMDB, tdb_path, db_size, transaction_lookback_secs);
+  mtev_conf_get_boolean(MTEV_CONF_ROOT, "/tm/transaction_db/@use_bloom_filter", &bloom_filter);
+  tm_transaction_store_init(TM_TRANSACTION_STORE_TYPE_LMDB, tdb_path, db_size, transaction_lookback_secs, bloom_filter);
 
   /* read mtev_config to determine what topic and partition I am reading */
   char *broker_list = NULL;

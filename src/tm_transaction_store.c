@@ -77,17 +77,11 @@ static bloom_t *last_bloom;
 static char *last_path;
 static size_t _initial_size;
 static char *base_path;
+static bool _use_bloom_filters;
 
 static tm_transaction_store_type tm_type;
 static ck_rwlock_t rwlock;
 static int default_lookback_secs;
-
-typedef struct stored {
-  uint64_t first_seen_ms;
-  bool trace;
-  mtev_json_object *json;
-  char data[];
-} stored_t;
 
 #define MAGIC_WORD_V2 0xd06f00d
 #define MAGIC_WORD_V3 0xbadf00d
@@ -99,7 +93,7 @@ typedef struct lmdb_stored_root_v4 {
   uint64_t first_seen_ms;
   uint64_t last_modified_ms;
   int ttl;
-  bool trace;
+  bool unused;
   char data[];
 } __attribute__((packed)) lmdb_stored_root_t;
 
@@ -225,14 +219,15 @@ _tm_transaction_store_open_environments(size_t initial_size, const char *path, b
 
 void
 tm_transaction_store_init(tm_transaction_store_type type, const char *path,
-                          size_t initial_size, int _default_lookback_secs)
+                          size_t initial_size, int _default_lookback_secs, 
+                          bool use_bloom_filters)
 {
   char subpath[1024];
-  char temp[1024];
   tm_type = type;
   default_lookback_secs = _default_lookback_secs;
   base_path = strdup(path);
   _initial_size = initial_size;
+  _use_bloom_filters = use_bloom_filters;
   ck_rwlock_init(&rwlock);
 
   if (!_mkdir(path)) {
@@ -250,97 +245,17 @@ tm_transaction_store_init(tm_transaction_store_type type, const char *path,
   }
 
   /* open the current and last */
-  _tm_transaction_store_open_environments(initial_size, path, true);
-
-  /*
-   * if there are current data.mdb and lock.mdb files in "path", copy them into "last"
-   */
-  snprintf(subpath, sizeof(subpath), "%s/data.mdb", path);
-  if(access(subpath, F_OK) != -1) {
-
-    uint64_t now = mtev_now_ms();
-    MDB_env *env;
-    MDB_dbi dbi;
-    int rc = mdb_env_create(&env);
-    mtevAssert(rc == 0);
-
-    /* let lots of threads read us */
-    rc = mdb_env_set_maxreaders(env, 1024);
-    mtevAssert(rc == 0);
-
-    /* open more than 1 database */
-    rc = mdb_env_set_maxdbs(env, 5);
-    mtevAssert(rc == 0);
-
-    rc = mdb_env_set_mapsize(env, initial_size  - (initial_size % 4096));
-    mtevAssert(rc == 0);
-
-    rc = mdb_env_open(env, path, MDB_NORDAHEAD | MDB_NOSYNC | MDB_NOMETASYNC | MDB_NOMEMINIT, 0644);
-    mtevAssert(rc == 0);
-
-    MDB_txn *txn;
-    MDB_txn *insert_txn;
-    rc = mdb_txn_begin(env, NULL, 0, &txn);
-    mtevAssert(rc == 0);
-    rc = mdb_dbi_open(txn, NULL, MDB_CREATE, &dbi);
-    mtevAssert(rc == 0);
-
-    rc = mdb_txn_commit(txn);
-    mtevAssert(rc == 0);
-
-    /* now create a RDONLY txn so we can iterate the existing db */
-    rc = mdb_txn_begin(env, NULL, MDB_RDONLY, &txn);
-    /* and create a read/write txn for inserting into "last" */
-    rc = mdb_txn_begin(last_env, NULL, 0, &insert_txn);
-    MDB_cursor *cursor;
-    MDB_cursor_op op = MDB_FIRST;
-    MDB_val key, data;
-
-    rc = mdb_cursor_open(txn, dbi, &cursor);
-    mtevAssert(rc == 0);
-
-    int insert_count = 0;
-    while ((rc = mdb_cursor_get(cursor, &key, &data, op)) == 0) {
-      op = MDB_NEXT;
-      lmdb_stored_root_t *ss = (lmdb_stored_root_t *)data.mv_data;
-      rc = mdb_put(insert_txn, last_dbi, &key, &data, 0);
-      mtevAssert(rc == 0);
-      if (key.mv_size == 32 && ss->trace == true && rc == 0) {
-        rc = mdb_put(insert_txn, last_jaeger_dbi, &key, &data, 0);
-        mtevAssert(rc == 0);
-      }
-      insert_count++;
-      if (insert_count % 100 == 0) {
-        rc = mdb_txn_commit(insert_txn);
-        mtevAssert(rc == 0);
-        rc = mdb_txn_begin(last_env, NULL, 0, &insert_txn);
-        mtevAssert(rc == 0);
-      }
-    }
-    rc = mdb_txn_commit(insert_txn);
-    mtevAssert(rc == 0);
-    mdb_txn_abort(txn);
-
-    uint64_t done = mtev_now_ms();
-    mtevL(mtev_error, "Migration took: %" PRIu64 " ms\n", (done - now));
-    /* remove the old files */
-    mdb_dbi_close(env, dbi);
-    mdb_env_close(env);
-
-    // unlink the files
-    snprintf(temp, sizeof(temp), "%s/data.mdb", path);
-    unlink(temp);
-    snprintf(temp, sizeof(temp), "%s/lock.mdb", path);
-    unlink(temp);
-  }
+  _tm_transaction_store_open_environments(initial_size, path, use_bloom_filters);
 }
 
 void
 tm_transaction_store_close()
 {
   mdb_dbi_close(current_env, current_dbi);
+  mdb_dbi_close(current_env, current_jaeger_dbi);
   mdb_env_close(current_env);
   mdb_dbi_close(last_env, last_dbi);
+  mdb_dbi_close(last_env, last_jaeger_dbi);
   mdb_env_close(last_env);
 }
 
@@ -377,7 +292,6 @@ tm_transaction_store_put(const char *id, size_t id_len, tm_transaction_store_ent
   s->first_seen_ms = entry->first_seen_ms;
   s->last_modified_ms = mtev_now_ms();
   s->json_str_len = store_len;
-  s->trace = entry->trace;
   s->ttl = ttl;
   memcpy(s->data, store_string, store_len);
 
@@ -415,25 +329,6 @@ tm_transaction_store_put(const char *id, size_t id_len, tm_transaction_store_ent
   }
   mdb_cursor_close(cursor);
 
-  if (s->trace) {
-    // if we are tracing, stick a copy in the jaeger database
-    rc = mdb_cursor_open(txn, current_jaeger_dbi, &cursor);
-    if (rc != 0) {
-      mdb_txn_abort(txn);
-      ck_rwlock_read_unlock(&rwlock);
-      return false;
-    }
-
-    rc = mdb_cursor_put(cursor, &key, &data, 0);
-    if (rc != 0) {
-      mtevL(tm_error, "Failure to put %s, error: %s\n", id, mdb_strerror(rc));
-      mdb_txn_abort(txn);
-      free(s);
-      ck_rwlock_read_unlock(&rwlock);
-      return false;
-    }
-  }
-
   rc = mdb_txn_commit(txn);
   if (rc != 0) {
     mtevL(tm_error, "Failure to commit %s, error: %s\n", id, mdb_strerror(rc));
@@ -443,7 +338,7 @@ tm_transaction_store_put(const char *id, size_t id_len, tm_transaction_store_ent
   }
   free(s);
 
-  bloom_add(current_bloom, id, id_len);
+  if (_use_bloom_filters) bloom_add(current_bloom, id, id_len);
 
   ck_rwlock_read_unlock(&rwlock);
   return true;
@@ -469,8 +364,10 @@ tm_transaction_store_add_child(const char *trace_id, size_t id_len, mtev_json_ob
   ck_rwlock_read_lock(&rwlock);
 
   /* check the bloom */
-  if (!bloom_contains(last_bloom, trace_id, id_len)) {
-    goto check_current;
+  if (_use_bloom_filters) {
+    if (!bloom_contains(last_bloom, trace_id, id_len)) {
+      goto check_current;
+    }
   }
 
   // check the last_env first
@@ -499,8 +396,10 @@ tm_transaction_store_add_child(const char *trace_id, size_t id_len, mtev_json_ob
   check_current:
 
     /* check the bloom */
-    if (!bloom_contains(current_bloom, trace_id, id_len)) {
-      goto add_child;
+    if (_use_bloom_filters) {
+      if (!bloom_contains(current_bloom, trace_id, id_len)) {
+        goto add_child;
+      }
     }
 
     // now check the current_env
@@ -587,6 +486,8 @@ tm_transaction_store_add_child(const char *trace_id, size_t id_len, mtev_json_ob
       free(compressed);
     }
 
+    int mv = tm_apm_server_major_version(child);
+
     mtev_json_object *processor = mtev_json_object_object_get(child, "processor");
     mtev_json_object *event = mtev_json_object_object_get(processor, "event");
     if (event) {
@@ -594,7 +495,7 @@ tm_transaction_store_add_child(const char *trace_id, size_t id_len, mtev_json_ob
       const char *hex_id = NULL;
       if (strcmp(ev, "span") == 0) {
         mtev_json_object *span = mtev_json_object_object_get(child, "span");
-        mtev_json_object *id = mtev_json_object_object_get(span, "hex_id");
+        mtev_json_object *id = mtev_json_object_object_get(span, mv == 6 ? "hex_id" : "id");
         hex_id = mtev_json_object_get_string(id);
       }
       else if (strcmp(ev, "error") == 0) {
@@ -650,8 +551,10 @@ tm_transaction_store_get(const char *id, size_t id_len)
   ck_rwlock_read_lock(&rwlock);
 
   /* check the last bloom */
-  if (!bloom_contains(last_bloom, id, id_len)) {
-    goto check_current;
+  if (_use_bloom_filters) {
+    if (!bloom_contains(last_bloom, id, id_len)) {
+      goto check_current;
+    }
   }
 
   // check last_env first
@@ -670,9 +573,11 @@ tm_transaction_store_get(const char *id, size_t id_len)
 
   check_current:
     /* check the current bloom */
-    if (!bloom_contains(current_bloom, id, id_len)) {
-      ck_rwlock_read_unlock(&rwlock);
-      return NULL;
+    if (_use_bloom_filters) {
+      if (!bloom_contains(current_bloom, id, id_len)) {
+        ck_rwlock_read_unlock(&rwlock);
+        return NULL;
+      }
     }
 
     rc = mdb_txn_begin(current_env, NULL, MDB_RDONLY, &txn);
@@ -736,7 +641,6 @@ tm_transaction_store_get(const char *id, size_t id_len)
 
   rval->first_seen_ms = s->first_seen_ms;
   rval->last_modified_ms = s->last_modified_ms;
-  rval->trace = s->trace;
   rval->data = json_o;
   mdb_cursor_close(cursor);
   mdb_txn_abort(txn);
@@ -747,6 +651,7 @@ tm_transaction_store_get(const char *id, size_t id_len)
 static size_t
 _tm_transaction_store_get_children(MDB_txn *txn, MDB_dbi database, const char *id, size_t id_len, tm_transaction_store_entry_t **children)
 {
+  #define MAX_CHILD_COUNT 500
   MDB_val key, data;
   MDB_cursor *cursor;
   MDB_cursor_op op = MDB_SET_RANGE;
@@ -816,6 +721,9 @@ _tm_transaction_store_get_children(MDB_txn *txn, MDB_dbi database, const char *i
         child_alloc_count *= 2;
         *children = realloc(*children, child_alloc_count * sizeof(tm_transaction_store_entry_t));
       }
+      if (child_count >= MAX_CHILD_COUNT) {
+        break;
+      }
     }
   }
   mdb_cursor_close(cursor);
@@ -864,10 +772,12 @@ tm_transaction_store_delete_old_transactions()
     tm_transaction_store_close();
 
     // rotate bloom filters
-    bloom_t *to_destroy = last_bloom;
-    last_bloom = current_bloom;
-    current_bloom = bloom_create(50000000);
-    bloom_destroy(to_destroy);
+    if (_use_bloom_filters) {
+      bloom_t *to_destroy = last_bloom;
+      last_bloom = current_bloom;
+      current_bloom = bloom_create(50000000);
+      bloom_destroy(to_destroy);
+    }
 
     // unlink the files and move current->last
     snprintf(path, sizeof(path), "%s/data.mdb", last_path);
@@ -890,14 +800,62 @@ tm_transaction_store_delete_old_transactions()
   return 0;
 }
 
+void
+tm_transaction_store_mark_traceable(const char *trace_id, size_t trace_id_len)
+{
+  MDB_val key, data;
+  MDB_txn *txn;
+  MDB_cursor *cursor;
+  int rc;
+
+  key.mv_data = (void *)trace_id;
+  key.mv_size = trace_id_len;
+
+  data.mv_data = "trace";
+  data.mv_size = 5;
+
+  ck_rwlock_read_lock(&rwlock);
+  rc = mdb_txn_begin(current_env, NULL, 0, &txn);
+  if (rc != 0) {
+    ck_rwlock_read_unlock(&rwlock);
+    return;
+  }
+
+  rc = mdb_cursor_open(txn, current_jaeger_dbi, &cursor);
+  if (rc != 0) {
+    mdb_txn_abort(txn);
+    ck_rwlock_read_unlock(&rwlock);
+    return;
+  }
+
+  rc = mdb_cursor_put(cursor, &key, &data, 0);
+  if (rc != 0) {
+    mtevL(tm_error, "Failure to put %s, error: %s\n", trace_id, mdb_strerror(rc));
+    mdb_txn_abort(txn);
+    ck_rwlock_read_unlock(&rwlock);
+    return;
+  }
+  mdb_cursor_close(cursor);
+
+  rc = mdb_txn_commit(txn);
+  if (rc != 0) {
+    mtevL(tm_error, "Failure to commit %s, error: %s\n", trace_id, mdb_strerror(rc));
+  }
+  ck_rwlock_read_unlock(&rwlock);
+  return;
+}
+
 size_t
 tm_transaction_store_process_jaeger()
 {
 #define JAEGER_MAX_COUNT 4000
   int rc;
   size_t jaegered_count = 0;
+  size_t jaegerable_count = 0;
+  size_t keys_in_jaeger_dbi = 0;
+  size_t missing_parent_count = 0;
   MDB_txn *txn;
-  MDB_cursor *cursor;
+  MDB_cursor *cursor, *parent_cursor, *last_parent_cursor;
   MDB_val key, data;
   MDB_cursor_op op = MDB_FIRST;
   uint64_t time_ms = mtev_now_ms() - (uint64_t)(default_lookback_secs * 1000UL);
@@ -922,15 +880,44 @@ tm_transaction_store_process_jaeger()
       return 0;
     }
 
+    rc = mdb_cursor_open(txn, parent_dbi, &parent_cursor);
+    if (rc != 0) {
+      mdb_txn_abort(txn);
+      ck_rwlock_read_unlock(&rwlock);
+      return 0;
+    }
+    rc = mdb_cursor_open(txn, last_dbi, &last_parent_cursor);
+    if (rc != 0) {
+      mdb_txn_abort(txn);
+      ck_rwlock_read_unlock(&rwlock);
+      return 0;
+    }
+
     char root_span_team[128];
     char span_team[128];
     while ((rc = mdb_cursor_get(cursor, &key, &data, op)) == 0) {
+      keys_in_jaeger_dbi++;
       op = MDB_NEXT;
 
       mtev_json_object *json_o = NULL;
-      lmdb_stored_root_t *ss = (lmdb_stored_root_t *)data.mv_data;
-      if (ss->last_modified_ms <= time_ms && ss->trace == true) {
+      if (data.mv_size == 5 && data.mv_data != NULL && strncmp((const char *)data.mv_data, "trace", 5) == 0) {
+        /* this was placed under the new mark_traceable function, we need to lookup the actual
+         * transaction in the parent_dbi
+         */
+        rc = mdb_cursor_get(parent_cursor, &key, &data, MDB_SET);
+        if (rc != 0) {
+          /* cannot find the key in the parent db, check the old parent db */
+          rc = mdb_cursor_get(last_parent_cursor, &key, &data, MDB_SET);
+          if (rc != 0) {
+            missing_parent_count++;
+            continue;
+          }
+        }
+      }
 
+      lmdb_stored_root_t *ss = (lmdb_stored_root_t *)data.mv_data;
+      if (ss->last_modified_ms <= time_ms) {
+        jaegerable_count++;
         const char *json = NULL;
         size_t json_len = 0;
 
@@ -947,6 +934,8 @@ tm_transaction_store_process_jaeger()
           if (drc != 0) {
             mtevL(mtev_error, "Cannot decompress entry: %d\n", drc);
             free(decompressed);
+            // don't try this trace again, it's corrupt.
+            mdb_cursor_del(cursor, 0);
             continue;
           }
           json_len = out_size;
@@ -962,77 +951,84 @@ tm_transaction_store_process_jaeger()
         if (ss->magic_word == MAGIC_WORD_V4_COMPRESS) {
           free((char *)json);
         }
-      }
-      if (json_o != NULL) {
-        mtev_json_object *trans = mtev_json_object_object_get(json_o, "transaction");
-        if (trans) {
-          bool rejaegered_root = false;
-          const char *service_name = tm_service_name(trans);
-          if (tm_get_team(service_name, root_span_team)) {
-            team_data_t *td = get_team_data(root_span_team);
-            jaegerize_transaction(trans, td->jaeger_dest_url);
-            jaegered_count++;
 
-            tm_transaction_store_entry_t *children = NULL;
-            size_t child_count = _tm_transaction_store_get_children(txn, parent_dbi, key.mv_data, key.mv_size, &children);
-            for (size_t i = 0; i < child_count; i++) {
-              /*
-               * get all the related teams in this transaction.. we are going to jaeger the spans to every
-               * team (copy them) so that the separate jaeger instances have full visibility into the transaction
-               */
+        if (json_o != NULL) {
+          mtev_json_object *trans = mtev_json_object_object_get(json_o, "transaction");
+          if (trans) {
+            bool rejaegered_root = false;
+            const char *service_name = tm_service_name(trans);
+            if (tm_get_team(service_name, root_span_team)) {
+              team_data_t *td = get_team_data(root_span_team);
+              jaegerize_transaction(trans, td->jaeger_dest_url);
+              jaegered_count++;
 
-              mtev_json_object *processor = mtev_json_object_object_get(children[i].data, "processor");
-              if (!processor) {
-                mtevL(tm_error, "Invalid elastic APM data, missing \"processor\" object trying to jaegerize\n");
+              tm_transaction_store_entry_t *children = NULL;
+              size_t child_count = _tm_transaction_store_get_children(txn, parent_dbi, key.mv_data, key.mv_size, &children);
+              for (size_t i = 0; i < child_count; i++) {
+                /*
+                 * get all the related teams in this transaction.. we are going to jaeger the spans to every
+                 * team (copy them) so that the separate jaeger instances have full visibility into the transaction
+                 */
+
+                mtev_json_object *processor = mtev_json_object_object_get(children[i].data, "processor");
+                if (!processor) {
+                  mtevL(tm_error, "Invalid elastic APM data, missing \"processor\" object trying to jaegerize\n");
+                  mtev_json_object_put(children[i].data);
+                  continue;
+                }
+
+                /* get the team of the trace member */
+                const char *span_service_name = tm_service_name(children[i].data);
+                team_data_t *other_td = NULL;
+                if (tm_get_team(span_service_name, span_team)) {
+                  other_td = get_team_data(span_team);
+                }
+
+                if (other_td != td && rejaegered_root == false && other_td != NULL) {
+                  jaegerize_transaction(trans, other_td->jaeger_dest_url);
+                  rejaegered_root = true;
+                }
+
+                const char *event = mtev_json_object_get_string(mtev_json_object_object_get(processor, "event"));
+                if (strcmp(event, "transaction") == 0) {
+                  jaegerize_transaction(children[i].data, td->jaeger_dest_url);
+                  if (other_td != td && other_td != NULL) {
+                    jaegerize_transaction(children[i].data, other_td->jaeger_dest_url);
+                  }
+                  jaegered_count++;
+                } else if (strcmp(event, "span") == 0) {
+                  jaegerize_span(children[i].data, td->jaeger_dest_url);
+                  if (other_td != td && other_td != NULL) {
+                    jaegerize_span(children[i].data, other_td->jaeger_dest_url);
+                  }
+                  jaegered_count++;
+                } else if (strcmp(event, "error") == 0) {
+                  jaegerize_error(children[i].data, td->jaeger_dest_url);
+                  if (other_td != td && other_td != NULL) {
+                    jaegerize_error(children[i].data, other_td->jaeger_dest_url);
+                  }
+                  jaegered_count++;
+                }
                 mtev_json_object_put(children[i].data);
-                continue;
               }
-
-              /* get the team of the trace member */
-              const char *span_service_name = tm_service_name(children[i].data);
-              team_data_t *other_td = NULL;
-              if (tm_get_team(span_service_name, span_team)) {
-                other_td = get_team_data(span_team);
-              }
-
-              if (other_td != td && rejaegered_root == false) {
-                jaegerize_transaction(trans, other_td->jaeger_dest_url);
-                rejaegered_root = true;
-              }
-
-              const char *event = mtev_json_object_get_string(mtev_json_object_object_get(processor, "event"));
-              if (strcmp(event, "transaction") == 0) {
-                jaegerize_transaction(children[i].data, td->jaeger_dest_url);
-                if (other_td != td) {
-                  jaegerize_transaction(children[i].data, other_td->jaeger_dest_url);
-                }
-                jaegered_count++;
-              } else if (strcmp(event, "span") == 0) {
-                jaegerize_span(children[i].data, td->jaeger_dest_url);
-                if (other_td != td) {
-                  jaegerize_span(children[i].data, other_td->jaeger_dest_url);
-                }
-                jaegered_count++;
-              } else if (strcmp(event, "error") == 0) {
-                jaegerize_error(children[i].data, td->jaeger_dest_url);
-                if (other_td != td) {
-                  jaegerize_error(children[i].data, other_td->jaeger_dest_url);
-                }
-                jaegered_count++;
-              }
-              mtev_json_object_put(children[i].data);
+              free(children);
             }
-            free(children);
           }
+          mtev_json_object_put(json_o);
+          mdb_cursor_del(cursor, 0);
+          jaegered_count++;
+          if (jaegered_count >= JAEGER_MAX_COUNT) break;
+        } else {
+          // can't parse the json, don't try this trace again
+          mtevL(tm_error, "json parse of %.*s failed\n", (int)key.mv_size, (const char *)key.mv_data);
+          mdb_cursor_del(cursor, 0);
         }
-        mtev_json_object_put(json_o);
-        mdb_cursor_del(cursor, 0);
-        jaegered_count++;
-        if (jaegered_count >= JAEGER_MAX_COUNT) break;
       }
     }
 
     mdb_cursor_close(cursor);
+    mdb_cursor_close(parent_cursor);
+    mdb_cursor_close(last_parent_cursor);
     rc = mdb_txn_commit(txn);
     if (rc != 0) {
       mtevL(tm_error, "Error committing jaeger trans: %d\n", rc);
@@ -1041,6 +1037,9 @@ tm_transaction_store_process_jaeger()
   ck_rwlock_read_unlock(&rwlock);
   uint64_t done = mtev_now_ms();
   mtevL(mtev_error, "Jaeger took: %" PRIu64 " ms\n", (done - now));
+  mtevL(mtev_error, "Jaegerable count: %zu\n", jaegerable_count);
+  mtevL(mtev_error, "Jaegerable keys count: %zu\n", keys_in_jaeger_dbi);
+  mtevL(mtev_error, "Jaegerable missing parent count: %zu\n", missing_parent_count);
   return jaegered_count;
 }
 

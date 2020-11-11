@@ -10,13 +10,12 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
+
 static bool
 service_dash_exists(team_data_t *td, const char *service_name, const service_info_t *service_info)
 {
   mtev_dyn_buffer_t response;
   bool exists = false;
-
-  //if (service_info->created) return true;
 
   mtev_dyn_buffer_init(&response);
 
@@ -32,7 +31,13 @@ service_dash_exists(team_data_t *td, const char *service_name, const service_inf
       }
       mtev_json_object_put(o);
     }
-  } 
+  } else {
+    // if the circonus search failed (network blip, throttling, etc..)
+    // consider it as existing so we don't create multiple copies of
+    // the same dashboard
+    mtevL(mtev_error, "Search for service dash: '%s' failed\n", service_name);
+    exists = true;
+  }
   mtev_dyn_buffer_destroy(&response);
   return exists;
 }
@@ -57,7 +62,7 @@ maybe_create_graph(team_data_t *td, const char *path, mtev_hash_table *values)
     mtev_dyn_buffer_add(&contents, eof, 1);
     char *resolved = tm_replace_vars((const char *)mtev_dyn_buffer_data(&contents), values);
     mtev_dyn_buffer_destroy(&contents);
-    
+
     /* parse the resolved json and get the graph title */
     mtev_json_object *o = mtev_json_tokener_parse(resolved);
     if (o == NULL) {
@@ -164,6 +169,12 @@ tm_create_visuals(mtev_hash_table *teams)
   while(mtev_hash_adv(teams, &it)) {
     team_data_t *td = (team_data_t *)it.value.ptr;
     const char *team = it.key.str;
+
+    if (td->circonus_api_key == NULL || strlen(td->circonus_api_key) == 0) {
+      mtevL(tm_notice, "Team is missing circonus_api_key, skipping visual creation: %s\n", team);
+      continue;
+    }
+
     mtevL(tm_notice, "Creating visuals for team: %s\n", team);
 
     /* loop through the service_data */

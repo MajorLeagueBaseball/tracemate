@@ -324,10 +324,9 @@ tm_kafka_process_message(rd_kafka_message_t *m, topic_stats_t *stats)
         ck_pr_store_64(&stats->kafka_offset, m->offset);
         stats_add64(stats->messages_processed, 1);
 
-        /* every message has a "processor" object and a "context" object */
+        /* every message has a "processor" object */
         mtev_json_object *processor = mtev_json_object_object_get(top, "processor");
-        mtev_json_object *context = mtev_json_object_object_get(top, "context");
-        if (!processor || !context) {
+        if (!processor) {
           mtevL(tm_error, "Invalid elastic APM data\n");
           stats_add64(stats->messages_errored, 1);
           mtev_json_object_put(top);
@@ -366,8 +365,7 @@ tm_kafka_process_message(rd_kafka_message_t *m, topic_stats_t *stats)
            * the hook is allowed to produce another document to replace or add to the incoming document, process result
            */
           mtev_json_object *result_processor = mtev_json_object_object_get(result, "processor");
-          mtev_json_object *result_context = mtev_json_object_object_get(result, "context");
-          if (result_processor && result_context) {
+          if (result_processor) {
             const char *result_event = mtev_json_object_get_string(mtev_json_object_object_get(result_processor, "event"));
             bool k = tm_kafka_handle_message(stats, result_event, result, ttl);
             if (k == false) {

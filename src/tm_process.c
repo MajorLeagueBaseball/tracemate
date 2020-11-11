@@ -72,6 +72,10 @@ mtev_hash_table*
 pre_process(mtev_json_object *message, char *team, char *tag_string, uint64_t *timestamp)
 {
   char sn[256];
+
+  int mv = tm_apm_server_major_version(message);
+  if (mv < 6) return NULL;
+
   const char *service_name = tm_service_name(message);
   if (!tm_get_team(service_name, team)) {
     mtevL(tm_error, "Failed to get team name from: %s\n", service_name);
@@ -105,19 +109,38 @@ pre_process(mtev_json_object *message, char *team, char *tag_string, uint64_t *t
   const char *ts = mtev_json_object_get_string(mtev_json_object_object_get(message, "@timestamp"));
   *timestamp = parse_timestamp(ts);
 
-  mtev_json_object *context = mtev_json_object_object_get(message, "context");
-
-  /* build our tag string first as this will be shared for each metric */
   char *tags = tag_string;
   tags += sprintf(tags, "service:%s", service_name);
-  if (context) {
-    mtev_json_object *sys = mtev_json_object_object_get(context, "system");
-    if (sys) {
-      mtev_json_object *host = mtev_json_object_object_get(sys, "hostname");
-      mtev_json_object *ip = mtev_json_object_object_get(sys, "ip");
-      if (host) {
+
+  if (mv == 6) {
+    mtev_json_object *context = mtev_json_object_object_get(message, "context");
+
+    /* build our tag string first as this will be shared for each metric */
+    if (context) {
+      mtev_json_object *sys = mtev_json_object_object_get(context, "system");
+      if (sys) {
+        mtev_json_object *host = mtev_json_object_object_get(sys, "hostname");
+        mtev_json_object *ip = mtev_json_object_object_get(sys, "ip");
+        if (host) {
+          tags += sprintf(tags, ",host:");
+          tags += tm_clean_tag_value(mtev_json_object_get_string(host), tags);
+        }
+        if (ip) {
+          tags += sprintf(tags, ",ip:");
+          tags += tm_clean_tag_value(mtev_json_object_get_string(ip), tags);
+        }
+      }
+    }
+  } else if (mv > 6) {
+    mtev_json_object *host = mtev_json_object_object_get(message, "host");
+
+    /* build our tag string first as this will be shared for each metric */
+    if (host) {
+      mtev_json_object *hostname = mtev_json_object_object_get(host, "hostname");
+      mtev_json_object *ip = mtev_json_object_object_get(host, "ip");
+      if (hostname) {
         tags += sprintf(tags, ",host:");
-        tags += tm_clean_tag_value(mtev_json_object_get_string(host), tags);
+        tags += tm_clean_tag_value(mtev_json_object_get_string(hostname), tags);
       }
       if (ip) {
         tags += sprintf(tags, ",ip:");

@@ -36,6 +36,7 @@ bool process_metric_message(topic_stats_t *stats, mtev_json_object *message)
     return false;
   }
   team_data_t *td = get_team_data(team);
+  int mv = tm_apm_server_major_version(message);
 
   /* build aggregate metrics, this replaces host specific info with `all` */
   uint64_t agg_timestamp = ceil_timestamp(timestamp_ms);
@@ -44,17 +45,27 @@ bool process_metric_message(topic_stats_t *stats, mtev_json_object *message)
   mtev_json_object *jvm = mtev_json_object_object_get(message, "jvm");
   mtev_json_object *nodejs = mtev_json_object_object_get(message, "nodejs");
   mtev_json_object *golang = mtev_json_object_object_get(message, "golang");
-  mtev_json_object *context = mtev_json_object_object_get(message, "context");
-  mtev_json_object *service = mtev_json_object_object_get(context, "service");
-  mtev_json_object *service_name = mtev_json_object_object_get(service, "name");
-  mtev_json_object *agent = mtev_json_object_object_get(service, "agent");
-  mtev_json_object *agent_name = mtev_json_object_object_get(agent, "name");
-
-  const char *sn = mtev_json_object_get_string(service_name);
-  const char *an = mtev_json_object_get_string(agent_name);
+  mtev_json_object *agent = NULL;
+  if (mv > 6) {
+    agent = mtev_json_object_object_get(message, "agent");
+  } else {
+    mtev_json_object *context = mtev_json_object_object_get(message, "context");
+    if (context) {
+      mtev_json_object *service = mtev_json_object_object_get(context, "service");
+      if (service) {
+        agent = mtev_json_object_object_get(service, "agent");
+      }
+    }
+  }
+  const char *an = NULL;
+  if (agent != NULL) {
+    mtev_json_object *agent_name = mtev_json_object_object_get(agent, "name");
+    an = mtev_json_object_get_string(agent_name);
+  }
+  const char *sn = tm_service_name(message);
 
   service_info_t *sit = NULL;
-  if (mtev_hash_retrieve(&td->service_data, sn, strlen(sn), (void **)&sit) && sit->service_agent == NULL) {
+  if (mtev_hash_retrieve(&td->service_data, sn, strlen(sn), (void **)&sit) && sit->service_agent == NULL && an != NULL) {
     sit->service_agent = strdup(an);
   }
 

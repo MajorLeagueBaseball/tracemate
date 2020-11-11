@@ -24,8 +24,6 @@
 #include "tm_process.h"
 #include "tm_utils.h"
 
-static pcre *sql_match = NULL;
-
 #define RETURN_IF_MISSING(result,o,field)                               \
   mtev_json_object *result = NULL;                                      \
   do {                                                                  \
@@ -37,6 +35,7 @@ static pcre *sql_match = NULL;
     }                                                                   \
   } while(false)
 
+#if 0
 static bool
 parse_stmt(const char *stmt, char *table, size_t table_len)
 {
@@ -71,62 +70,42 @@ parse_stmt(const char *stmt, char *table, size_t table_len)
   }
   return false;
 }
+#endif
 
-bool process_span_message(topic_stats_t *stats, mtev_json_object *message, int ttl)
+static char*
+parse_v6_type(const char *type)
 {
-  char tag_string[3172];
-  char team[128];
-  uint64_t timestamp;
-  mtev_hash_table *team_metrics = pre_process(message, team, tag_string, &timestamp);
-  team_data_t *td = get_team_data(team);
+  // an elastic apm 6.X span "type" resembles:
+  //
+  // db.postgresql.query
+  // db.redis.query
+  // external.http.get
 
-  if (team_metrics == NULL || td == NULL) return false;
+  // we care about the 2nd segment here.
 
-  mtev_json_object *trans = mtev_json_object_object_get(message, "transaction");
-  if (trans == NULL) {
-    mtevL(tm_error, "'span' event is malformed, no 'transaction' object\n");
-    stats_add64(stats->messages_errored, 1);
-    return false;
+  int idx = 0;
+  char *subtype = calloc(1, 20);
+  bool in_segment = false;
+  for (int i = 0; i < strlen(type); i++) {
+    if (type[i] == '.' && in_segment == false) {
+      in_segment = true;
+      continue;
+    }
+    if (type[i] == '.' && in_segment) {
+      return subtype;
+    }
+    if (in_segment) {
+      subtype[idx++] = type[i];
+    }
   }
-
-  mtev_json_object *trace_json = mtev_json_object_object_get(message, "trace");
-  if (trace_json == NULL) {
-    mtevL(tm_error, "'span' event is malformed, no 'trace' object\n");
-    stats_add64(stats->messages_errored, 1);
-    return false;
+  if (in_segment == false) {
+    //we never hit a dot, use "unknown"
+    memcpy(subtype, "unknown", 7);
   }
-  mtev_json_object *trace_id_json = mtev_json_object_object_get(trace_json, "id");
-  const char *trace_id = mtev_json_object_get_string(trace_id_json);
-  if (trace_id == NULL) return false;
-
-  /* save this span for jaegerizing (maybe) */
-  tm_transaction_store_add_child(trace_id, strlen(trace_id), message, ttl);
-
-  /**
-   * get the related root transaction
-   *
-   * This is part of the terrible nature of stream processing, events are not guaranteed ordered
-   * across topics and certainly never ordered in time due to buffering and other stuff.
-   *
-   * A span can arrive *before* the transaction it relates to, and the span relies on
-   * information in the transaction.  To combat this issue, we re-publish the span
-   * into a special topic (orphaned_apm_data) with some augmentation to keep
-   * track of when we first saw it.  The orphaned processor then reads this topic,
-   * checks for transaction existence and forwards here if the trans exists.
-   */
-  tm_transaction_store_entry_t *root_span = tm_transaction_store_get(trace_id, strlen(trace_id));
-  if (root_span == NULL) {
-    mtevL(tm_debug, "'span' event has no transaction, processing later\n");
-    return false;
-  }
-
-  bool x = process_span_message_with_root(message, root_span);
-  tm_transaction_store_entry_free(root_span);
-  return x;
+  return subtype;
 }
 
-bool
-process_span_message_with_root(mtev_json_object *message, tm_transaction_store_entry_t *root_span)
+bool process_span_message(topic_stats_t *stats, mtev_json_object *message, int ttl)
 {
   char metric_name[4096];
   char tag_string[3172];
@@ -203,23 +182,14 @@ process_span_message_with_root(mtev_json_object *message, tm_transaction_store_e
   const char *trace_id = mtev_json_object_get_string(trace_id_json);
   if (trace_id == NULL) return false;
 
-  const char *url = NULL;
-  if (root_span->data != NULL) {
-    url = mtev_json_object_get_string(mtev_json_object_object_get(root_span->data, "url"));
-  }
+  /* save this span for jaegerizing (maybe) */
+  tm_transaction_store_add_child(trace_id, strlen(trace_id), message, ttl);
 
   mtev_json_object *type = mtev_json_object_object_get(span, "type");
 
-  RETURN_IF_MISSING(context, message, "context");
-  RETURN_IF_MISSING(service, context, "service");
-  RETURN_IF_MISSING(service_name, service, "name");
-  const char *service_string = NULL;
-  if (service_name) {
-    service_string = mtev_json_object_get_string(service_name);
-  }
+  const char *service_string = tm_service_name(message);
 
   const char *t = mtev_json_object_get_string(type);
-  mtev_json_object *db = mtev_json_object_object_get(context, "db");
 
   /* certain high cardinality metrics can contain a special tag that prevents them from being rolled up
    * for longer term storage
@@ -229,73 +199,66 @@ process_span_message_with_root(mtev_json_object *message, tm_transaction_store_e
     rollup = ",__rollup:false";
   }
 
-  if (db) {
+  int mv = tm_apm_server_major_version(message);
+
+  if (strncmp(t, "db", 2) == 0) {
     const char *operation = mtev_json_object_get_string(mtev_json_object_object_get(span, "name"));
-    const char *stmt = mtev_json_object_get_string(mtev_json_object_object_get(db, "statement"));
-
-    char table[256];
-    if (!parse_stmt(stmt, table, sizeof(table))) {
-      *table = '\0';
-    }
-
-    timestamp = ceil_timestamp(timestamp);
-
-    /* aggregate for URL */
-    snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - %s|ST[%s%s]",
-             url, agg_tag_string, rollup);
-    update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
+    uint64_t agg_timestamp = ceil_timestamp(timestamp);
 
     /* aggregate for statement */
-    snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - %s %s %s|ST[%s%s]",
-             t, table, operation, agg_tag_string, rollup);
-    update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
-
-    /* aggregate for all URLs */
-    snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - all|ST[%s]",
-             agg_tag_string);
-    update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
-
-    /* aggregate for type */
-    snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - %s|ST[%s]",
-             t, agg_tag_string);
-    update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
+    snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - %s|ST[%s%s]",
+             operation, agg_tag_string, rollup);
+    update_histogram(td, team_metrics, metric_name, true, duration_us, agg_timestamp);
 
     /* host and statement specific */
-    if (td->collect_host_level_metrics) {
-      snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - %s %s %s|ST[%s%s]",
-               t, table, operation, tag_string, rollup);
-      update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
-    }
-
-
-    /* host and url specific */
     if (td->collect_host_level_metrics) {
       snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - %s|ST[%s%s]",
-               url, tag_string, rollup);
-      update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
-    }
-
-    /* host and statement specific */
-    if (td->collect_host_level_metrics) {
-      snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - %s %s %s|ST[%s%s]",
-               t, table, operation, tag_string, rollup);
-      update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
-    }
-
-    /* counts */
-    if (td->collect_host_level_metrics) {
-      snprintf(metric_name, sizeof(metric_name) - 1, "db - stmt_count - %s %s %s|ST[%s%s]",
-               t, table, operation, tag_string, rollup);
-      update_counter(td, team_metrics, metric_name, true, 1, timestamp);
-
+               operation, tag_string, rollup);
+      update_histogram(td, team_metrics, metric_name, true, duration_us, agg_timestamp);
       snprintf(metric_name, sizeof(metric_name) - 1, "db - stmt_count - %s|ST[%s%s]",
-               url, tag_string, rollup);
-      update_counter(td, team_metrics, metric_name, true, 1, timestamp);
+               operation, tag_string, rollup);
+      update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
     }
+
+    const char *subtype = NULL;
+    bool free_subtype = false;
+    if (mv > 6) {
+      subtype = mtev_json_object_get_string(mtev_json_object_object_get(span, "subtype"));
+    } else {
+      subtype = parse_v6_type(t);
+      free_subtype = true;
+    }
+
+    if (subtype != NULL) {
+      /* aggregate for subtype operation */
+      snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - %s - %s|ST[%s%s]",
+               subtype, operation, agg_tag_string, rollup);
+      update_histogram(td, team_metrics, metric_name, true, duration_us, agg_timestamp);
+
+      snprintf(metric_name, sizeof(metric_name) - 1, "db - stmt_count - %s - %s|ST[%s%s]",
+               subtype, operation, tag_string, rollup);
+      update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
+
+      snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - %s|ST[%s%s]",
+               subtype, agg_tag_string, rollup);
+      update_histogram(td, team_metrics, metric_name, true, duration_us, agg_timestamp);
+
+      snprintf(metric_name, sizeof(metric_name) - 1, "db - stmt_count - %s|ST[%s]",
+               subtype, agg_tag_string);
+      update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
+      if (free_subtype) {
+        free((char *)subtype);
+      }
+    }
+
+    /* aggregate for the service */
+    snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - all|ST[%s]",
+             agg_tag_string);
+    update_histogram(td, team_metrics, metric_name, true, duration_us, agg_timestamp);
 
     snprintf(metric_name, sizeof(metric_name) - 1, "db - stmt_count - all|ST[%s]",
              agg_tag_string);
-    update_counter(td, team_metrics, metric_name, true, 1, timestamp);
+    update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
   }
   else if (strcmp(t, "external.http") == 0 || strcmp(t, "ext.http.http") == 0 || strcmp(t, "external") == 0) {
@@ -309,49 +272,34 @@ process_span_message_with_root(mtev_json_object *message, tm_transaction_store_e
      * We need to genericize this
      */
     char *external_name = genericize_path(service_string, ex_name, td);
-    const char *generic_url = url;
 
-    timestamp = ceil_timestamp(timestamp);
+    uint64_t agg_timestamp = ceil_timestamp(timestamp);
 
-    /* aggregate for URL */
-    snprintf(metric_name, sizeof(metric_name) - 1, "external - latency - %s|ST[%s%s]",
-             generic_url, agg_tag_string, rollup);
-    update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
-
-    /* aggregate for statement */
+    /* aggregate for external */
     snprintf(metric_name, sizeof(metric_name) - 1, "external - latency - %s|ST[%s%s]",
              external_name, agg_tag_string, rollup);
-    update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
+    update_histogram(td, team_metrics, metric_name, true, duration_us, agg_timestamp);
 
-    /* aggregate for all URLs */
+    /* aggregate for service */
     snprintf(metric_name, sizeof(metric_name) - 1, "external - latency - all|ST[%s]",
              agg_tag_string);
-    update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
+    update_histogram(td, team_metrics, metric_name, true, duration_us, agg_timestamp);
 
     if (td->collect_host_level_metrics) {
       /* host and statement specific */
       snprintf(metric_name, sizeof(metric_name) - 1, "external - latency - %s|ST[%s%s]",
                external_name, tag_string, rollup);
-      update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
-
-      /* host and url specific */
-      snprintf(metric_name, sizeof(metric_name) - 1, "external - latency - %s|ST[%s%s]",
-               generic_url, tag_string, rollup);
-      update_histogram(td, team_metrics, metric_name, true, duration_us, timestamp);
+      update_histogram(td, team_metrics, metric_name, true, duration_us, agg_timestamp);
 
       /* counts */
       snprintf(metric_name, sizeof(metric_name) - 1, "external - call_count - %s|ST[%s%s]",
                external_name, tag_string, rollup);
-      update_counter(td, team_metrics, metric_name, true, 1, timestamp);
-
-      snprintf(metric_name, sizeof(metric_name) - 1, "external - call_count - %s|ST[%s%s]",
-               generic_url, tag_string, rollup);
-      update_counter(td, team_metrics, metric_name, true, 1, timestamp);
+      update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
     }
 
     snprintf(metric_name, sizeof(metric_name) - 1, "external - call_count - all|ST[%s]",
              agg_tag_string);
-    update_counter(td, team_metrics, metric_name, true, 1, timestamp);
+    update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
     free(external_name);
   }

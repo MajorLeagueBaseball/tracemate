@@ -33,11 +33,13 @@ typedef enum tm_transaction_store_type
 typedef struct __attribute__ ((packed)) tm_transaction_store_entry {
   uint64_t first_seen_ms;
   uint64_t last_modified_ms;
-  bool trace;
   mtev_json_object *data;
 } tm_transaction_store_entry_t;
 
-void tm_transaction_store_init(tm_transaction_store_type type, const char *path, size_t initial_size, int default_lookback_secs);
+void tm_transaction_store_init(tm_transaction_store_type type, const char *path, 
+                               size_t initial_size, int default_lookback_secs,
+                               bool use_bloom_filters);
+
 void tm_transaction_store_close();
 
 /**
@@ -50,9 +52,9 @@ bool tm_transaction_store_add_child(const char *trace_id, size_t id_len, mtev_js
 size_t tm_transaction_store_get_children(const char *trace_id, size_t id_len, tm_transaction_store_entry_t **children);
 tm_transaction_store_entry_t *tm_transaction_store_get(const char *id, size_t id_len);
 
+void tm_transaction_store_mark_traceable(const char *trace_id, size_t id_len);
+
 /**
- * 
- *
  * returns jaeger'd count
  */
 size_t tm_transaction_store_process_jaeger();
