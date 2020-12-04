@@ -215,10 +215,7 @@ java](https://www.elastic.co/guide/en/apm/agent/java/1.x/supported-technologies-
 
 ### Elastic APM Server
 
-Tracemate was built with Elastic APM server 6.6. There are some JSON document
-schema changes in Elastic APM server 7.0 which tracemate has not been updated to
-deal with, until that happens, Elastic APM server 6.6.X is your best bet.
-Crucially, Elastic APM server must be configured to output its documents to
+Elastic APM server must be configured to output its documents to
 Kafka with a specific config:
 
 ```
