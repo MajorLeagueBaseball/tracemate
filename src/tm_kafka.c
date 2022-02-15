@@ -19,7 +19,9 @@
 #include "tm_log.h"
 #include "tm_process.h"
 #include "tm_utils.h"
+#include "tm_process_otel_span.h"
 
+#include <eventer/eventer.h>
 #include <mtev_memory.h>
 
 struct tm_kafka {
@@ -284,6 +286,8 @@ static bool
 tm_kafka_process_message(rd_kafka_message_t *m, topic_stats_t *stats)
 {
   /*
+   * 
+   * If this is an elastic APM topic:
    * The incoming message is a JSON formatted elastic APM messages
    *
    * The field "processor.event" could be one of many types:
@@ -293,6 +297,8 @@ tm_kafka_process_message(rd_kafka_message_t *m, topic_stats_t *stats)
    * span - a member span of a distributed trace
    * error - error condition
    * aggregate - special synthetic type not produced by elastic APM for aggregation
+   * url - special synthetic used for URL path squashing
+   * regex - the result of the URL path squashing process
    *
    * Every incoming message will have a context.service.name that identifies where the data came from.
    * The string will resemble: {teamname}-{servicename}
@@ -310,9 +316,45 @@ tm_kafka_process_message(rd_kafka_message_t *m, topic_stats_t *stats)
    *               these are hung onto until we determine if the owning transaction needs to be sent to jaeger
    * error       - only used to determine if the parent transaction needs to be sent to jaeger
    *
+   * If this is an opentelemetry topic:
+   * 
+   * OTel data is protobuf (see the src/proto/opentelemetry folder), it is parsed as such before being sent along for further
+   * processing.
+   * 
+   * Inbound OTel messages can be either:
+   * 
+   * opentelemetry::proto::trace::v1::Span
+   * opentelemetry::proto::metrics::v1::Metric
+   * 
+   * The analog of an Elastic APM transaction is an OTel Span with no parent
+   * The analog of an Elastic APM error is an OTel Span with an attached event with name="exception"
+   * 
+   * The strategy for dealing with the different types is to parse Elastic APM json and create OTel 
+   * protobuf then process all data as OTel protobuf.  This gives us one path to get code right and
+   * sets us up for the future when everything is OTel.
    */
   if (m != NULL && m->err == 0) {
     stats_add64(stats->messages_seen, 1);
+
+    if (strcmp("otlp_spans", stats->topic->topic) == 0) {
+      return otel_process_jaeger_span(m, stats);
+    }
+    /* if (strcmp("otlp_metrics", ts->topic->topic) == 0) { */
+    /*   return otel_process_metric(m, ts); */
+    /* } */
+
+    /* if (strcmp("tracemate_urls", stats->topic->topic) == 0) { */
+    /*   /\** */
+    /*    * we don't need to look at all URLs, we can randomly sample with the */
+    /*    * idea that we will see the pattern again shortly. */
+    /*    *  */
+    /*    * Look at 10% of URLs. */
+    /*    *\/ */
+    /*   if (rand() % 100 < 90) { */
+    /*     return true; */
+    /*   } */
+    /* } */
+
     struct mtev_json_tokener *tokener = mtev_json_tokener_new();
     const char *json = m->payload;
     if (json != NULL) {
@@ -393,21 +435,26 @@ uint64_t
 tm_kafka_consume_messages(topic_stats_t *ts)
 {
   uint64_t offset = 0;
-  rd_kafka_message_t **rkmessages = (rd_kafka_message_t **)calloc(sizeof(rd_kafka_message_t *), ts->topic->batch_size);
+  uint64_t now = mtev_now_us();
+  rd_kafka_message_t *rkmessages[5000] = {NULL};
   ssize_t r = rd_kafka_consume_batch(ts->topic->rkt, ts->topic->partition,
-                                     100,
-                                     rkmessages,
-                                     ts->topic->batch_size);
+                                     2,
+                                     (rd_kafka_message_t **)&rkmessages,
+                                     5000);
   if (r != -1) {
     for (int i = 0 ; i < r ; i++) {
-      if (tm_kafka_process_message(rkmessages[i], ts) && offset < rkmessages[i]->offset) {
+
+      tm_kafka_process_message(rkmessages[i], ts);
+
+      if (offset < rkmessages[i]->offset) {
         offset = rkmessages[i]->offset;
       }
       rd_kafka_message_destroy(rkmessages[i]);
     }
   }
-  free(rkmessages);
 
+  uint64_t end = mtev_now_us();
+  mtevL(mtev_debug, "CONSUME on %s of %zd messages took %" PRIu64 " mics\n", ts->topic->topic, r, end - now);
   return offset;
 }
 

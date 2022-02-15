@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-#include "tm_jaeger.h"
 
 extern "C" {
+#include "tm_jaeger.h"
 #include "tm_utils.h"
 #include "tm_process.h"
 #include <curl/curl.h>
@@ -28,7 +28,6 @@ extern "C" {
 #include <grpcpp/client_context.h>
 #include <grpcpp/create_channel.h>
 #include <grpcpp/security/credentials.h>
-
 
 #include <ostream>
 #include <sstream>
@@ -130,15 +129,22 @@ build_stack_trace(mtev_json_object *stack_trace)
     if (path == NULL) {
       path = mtev_json_object_object_get(s, "module");
     }
-    trace << mtev_json_object_get_string(path)
-          << "."
-          << mtev_json_object_get_string(mtev_json_object_object_get(s, "function"))
-          << "("
-          << mtev_json_object_get_string(mtev_json_object_object_get(s, "filename"))
-          << ":"
-          << mtev_json_object_get_int(mtev_json_object_object_get(mtev_json_object_object_get(s, "line"), "number"))
-          << ")"
-          << "\n";
+    trace << mtev_json_object_get_string(path) << ".";
+    mtev_json_object *func = mtev_json_object_object_get(s, "function");
+    if (func != NULL) {
+      trace << mtev_json_object_get_string(func);
+    }
+    mtev_json_object *filename = mtev_json_object_object_get(s, "filename");
+    if (filename != NULL) {
+      trace << "(" << mtev_json_object_get_string(mtev_json_object_object_get(s, "filename"));
+      mtev_json_object *line = mtev_json_object_object_get(s, "line");
+      if (line != NULL) {
+        mtev_json_object *num = mtev_json_object_object_get(line, "number");
+        trace << ":" << mtev_json_object_get_int(num);
+      }
+      trace << ")";
+    }
+    trace << "\n";
   }
   if (frame_count > 20) {
     trace << "...\n";
@@ -180,12 +186,16 @@ private:
 static std::map<std::string, JaegerClient> jaeger_connections;
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
-const JaegerClient&
+const JaegerClient*
 get_jaeger_client(const char *jaeger_url)
 {
   mtev_log_stream_t debug_jaeger = mtev_log_stream_find("debug/jaeger");
   mtevL(debug_jaeger, "Making connection to jaeger_url: %s\n", jaeger_url);
   
+  if (jaeger_url == NULL || strlen(jaeger_url) == 0) {
+    return NULL;
+  }
+
   pthread_mutex_lock(&mutex);
   auto c = jaeger_connections.find(jaeger_url);
   if (c == jaeger_connections.end()) {
@@ -202,10 +212,10 @@ get_jaeger_client(const char *jaeger_url)
       mtevFatal(tm_error, "Can't find thing I just inserted?!\n");
     }
     pthread_mutex_unlock(&mutex);
-    return c->second;
+    return &c->second;
   }
   pthread_mutex_unlock(&mutex);
-  return c->second;
+  return &c->second;
 }
 
 #define RETURN_IF_MISSING(result,o,field)                  \
@@ -216,9 +226,141 @@ get_jaeger_client(const char *jaeger_url)
     if (result == NULL) return;                            \
   } while(false)
 
-extern "C" void jaegerize_transaction(mtev_json_object *message, const char *jaeger_url)
+static void 
+jaegerize_error(tm_transaction_store_entry_t *entry, proto::Span &span)
 {
-  const JaegerClient &jaeger_client = get_jaeger_client(jaeger_url);
+  mtev_json_object *message = entry->data;
+
+  mtev_log_stream_t debug_jaeger = mtev_log_stream_find("debug/jaeger");
+
+  RETURN_IF_MISSING(error_json, message, "error");
+
+  RETURN_IF_MISSING(timestamp, message, "timestamp");
+  RETURN_IF_MISSING(timestamp_us, timestamp, "us");
+
+  int64_t ts = mtev_json_object_get_int64(timestamp_us);
+  int mv = tm_apm_server_major_version(message);
+
+  mtev_json_object *context = NULL;
+  if (mv == 6) {
+    context = mtev_json_object_object_get(message, "context");
+  } else if (mv > 6) {
+    context = message;
+  }
+  RETURN_IF_MISSING(trace, message, "trace");
+
+  mtev_json_object *culprit_json = mtev_json_object_object_get(error_json, "culprit");
+  mtev_json_object *exception = mtev_json_object_object_get(error_json, "exception");
+  mtev_json_object *first_exception = NULL;
+  if (mv == 6) {
+    first_exception = exception;
+  } else if (mv > 6) {
+    // in APM server 7.x, the "exception" is actually an array and can contain multiple
+    int l = mtev_json_object_array_length(exception);
+    if (l > 0) {
+      first_exception = mtev_json_object_array_get_idx(exception, 0);
+    }
+  }
+
+  mtev_json_object *exception_message = NULL, *exception_type = NULL;
+  if (first_exception != NULL) {
+    exception_message = mtev_json_object_object_get(first_exception, "message");
+    exception_type = mtev_json_object_object_get(first_exception, "type");
+  }
+
+  proto::KeyValue* kind = span.add_tags();
+  kind->set_key("error");
+  kind->set_v_type(proto::ValueType::BOOL);
+  kind->set_v_bool(true);
+
+  proto::Log *log = span.add_logs();
+  log->mutable_timestamp()->set_seconds(ts / 1000000);
+  log->mutable_timestamp()->set_nanos((ts % 1000000) * 1000);
+
+  if (first_exception != NULL) {
+    if (culprit_json != NULL) {
+      proto::KeyValue* f = log->add_fields();
+      f->set_key("culprit");
+      f->set_v_type(proto::ValueType::STRING);
+      f->set_v_str(mtev_json_object_get_string(culprit_json));
+    }
+
+    if (exception_message != NULL) {
+      proto::KeyValue *f = log->add_fields();
+      f->set_key("message");
+      f->set_v_type(proto::ValueType::STRING);
+      f->set_v_str(mtev_json_object_get_string(exception_message));
+    }
+
+    mtev_json_object *exception_module = mtev_json_object_object_get(first_exception, "module");
+    if (exception_module != NULL) {
+      proto::KeyValue *f = log->add_fields();
+      f->set_key("module");
+      f->set_v_type(proto::ValueType::STRING);
+      f->set_v_str(mtev_json_object_get_string(exception_module));
+    }
+
+    if (exception_type != NULL) { 
+      proto::KeyValue *f = log->add_fields();
+      f->set_key("type");
+      f->set_v_type(proto::ValueType::STRING);
+      f->set_v_str(mtev_json_object_get_string(exception_type));
+    }
+
+    mtev_json_object *stacktrace = mtev_json_object_object_get(first_exception, "stacktrace");
+    if (stacktrace != NULL) {
+      char *st = build_stack_trace(stacktrace);
+      proto::KeyValue *f = log->add_fields();
+      f->set_key("stacktrace");
+      f->set_v_type(proto::ValueType::STRING);
+      f->set_v_str(st);
+      free(st);
+    }
+  }
+
+  mtev_json_object *request = NULL, *response = NULL, *system = NULL;
+  if (mv == 6) {
+    request = mtev_json_object_object_get(context, "request");
+    response = mtev_json_object_object_get(context, "response");
+    system = mtev_json_object_object_get(context, "system");
+  } else if (mv > 6) {
+    mtev_json_object *http = mtev_json_object_object_get(message, "http");
+    if (http) {
+      request = mtev_json_object_object_get(http, "request");
+      response = mtev_json_object_object_get(http, "response");
+    }
+    system = mtev_json_object_object_get(message, "host");
+  }
+
+  if (request != NULL) {
+    proto::KeyValue* f = log->add_fields();
+    f->set_key("request");
+    f->set_v_type(proto::ValueType::STRING);
+    f->set_v_str(mtev_json_object_get_string(request));
+  }
+
+  if (response != NULL) {
+    proto::KeyValue* f = log->add_fields();
+    f->set_key("response");
+    f->set_v_type(proto::ValueType::STRING);
+    f->set_v_str(mtev_json_object_get_string(response));
+  }
+
+  if (system != NULL) {
+    proto::KeyValue* f = log->add_fields();
+    f->set_key("system");
+    f->set_v_type(proto::ValueType::STRING);
+    f->set_v_str(mtev_json_object_get_string(system));
+  }
+}
+
+extern "C" void jaegerize_transaction(mtev_json_object *message, const char *jaeger_url, mtev_hash_table *span_errors)
+{
+  const JaegerClient *jaeger_client = get_jaeger_client(jaeger_url);
+  if (jaeger_client == NULL) {
+    mtevL(mtev_error, "No jaeger client for %s", jaeger_url);
+    return;
+  }
 
   mtev_log_stream_t debug_jaeger = mtev_log_stream_find("debug/jaeger");
   mtevL(debug_jaeger, "TRANS: %s\n", mtev_json_object_to_json_string(message));
@@ -459,6 +601,15 @@ extern "C" void jaegerize_transaction(mtev_json_object *message, const char *jae
   }
 
   const char *id = mtev_json_object_get_string(mtev_json_object_object_get(trans, "id"));
+
+  /**
+   * check the span_errors for any entries that match this span's ID
+   */
+  tm_transaction_store_entry_t *error = (tm_transaction_store_entry_t *)mtev_hash_get(span_errors, id, strlen(id));
+  if (error != NULL) {
+    jaegerize_error(error, span);
+  }
+
   uint64_t sid = hex2uint64BE(id, strlen(id));
   span.set_span_id(&sid, sizeof(sid));
   span.set_flags(1); // 1 means sampled, 2 means DEBUG
@@ -496,12 +647,18 @@ extern "C" void jaegerize_transaction(mtev_json_object *message, const char *jae
   *batch_span = span;
   *batch->mutable_process() = span.process();
 
-  jaeger_client.send(req);
+  jaeger_client->send(req);
 }
 
-extern "C" void jaegerize_span(mtev_json_object *message, const char *jaeger_url)
+
+extern "C" void jaegerize_span(mtev_json_object *message, const char *jaeger_url, mtev_hash_table *span_errors)
 {
-  const JaegerClient &jaeger_client = get_jaeger_client(jaeger_url);
+  const JaegerClient *jaeger_client = get_jaeger_client(jaeger_url);
+
+  if (jaeger_client == NULL) {
+    mtevL(mtev_error, "No jaeger client for %s", jaeger_url);
+    return;
+  }
 
   RETURN_IF_MISSING(span_json, message, "span");
 
@@ -601,6 +758,8 @@ extern "C" void jaegerize_span(mtev_json_object *message, const char *jaeger_url
     }
   }
   else if (strcmp(type, "external.http") == 0 || strcmp(type, "ext.http.http") == 0 || strcmp(type, "external") == 0) {
+
+
     /* log the context info for external calls */
     proto::KeyValue* kind = span.add_tags();
     kind->set_key("span.kind");
@@ -619,6 +778,25 @@ extern "C" void jaegerize_span(mtev_json_object *message, const char *jaeger_url
       f->set_key("context.http");
       f->set_v_type(proto::ValueType::STRING);
       f->set_v_str(mtev_json_object_get_string(http));
+    }
+
+    mtev_json_object *destination = mtev_json_object_object_get(span_json, "destination");
+    if (destination) {
+      proto::KeyValue* f = log->add_fields();
+      f->set_key("context.destination");
+      f->set_v_type(proto::ValueType::STRING);
+      f->set_v_str(mtev_json_object_get_string(destination));
+    }
+
+    mtev_json_object *url = mtev_json_object_object_get(message, "url");
+    if (url) {
+      mtev_json_object *orig = mtev_json_object_object_get(url, "original");
+      if (orig) {
+        proto::KeyValue* u = span.add_tags();
+        u->set_key("http.url");
+        u->set_v_type(proto::ValueType::STRING);
+        u->set_v_str(mtev_json_object_get_string(orig));
+      }
     }
 
     mtev_json_object *stacktrace = mtev_json_object_object_get(span_json, "stacktrace");
@@ -678,6 +856,28 @@ extern "C" void jaegerize_span(mtev_json_object *message, const char *jaeger_url
       free(st);
     }
   }
+  else if (strcmp(type, "app") == 0 || strcmp(type, "custom") == 0) {
+    /* log the context info for custom/app resource calls */
+    proto::KeyValue* kind = span.add_tags();
+    kind->set_key("span.kind");
+    kind->set_v_type(proto::ValueType::STRING);
+    kind->set_v_str("server"); // custom or app are internal function calls or internal code blocks
+
+    proto::KeyValue* typet = span.add_tags();
+    typet->set_key("type");
+    typet->set_v_type(proto::ValueType::STRING);
+    typet->set_v_str(type);
+  }
+
+  const char *id = mtev_json_object_get_string(mtev_json_object_object_get(span_json, mv == 6 ? "hex_id" : "id"));
+
+  /**
+   * check the span_errors for any entries that match this span's ID
+   */
+  tm_transaction_store_entry_t *error = (tm_transaction_store_entry_t *)mtev_hash_get(span_errors, id, strlen(id));
+  if (error != NULL) {
+    jaegerize_error(error, span);
+  }
 
 
   const char *trace_id = mtev_json_object_get_string(mtev_json_object_object_get(trace, "id"));
@@ -685,7 +885,6 @@ extern "C" void jaegerize_span(mtev_json_object *message, const char *jaeger_url
   fill_trace_id(trace_id, &tid);
   span.set_trace_id(&tid, sizeof(tid));
 
-  const char *id = mtev_json_object_get_string(mtev_json_object_object_get(span_json, mv == 6 ? "hex_id" : "id"));
   uint64_t sid = hex2uint64BE(id, strlen(id));
   span.set_span_id(&sid, sizeof(sid));
   span.set_flags(1); // 1 means sampled, 2 means DEBUG
@@ -720,220 +919,8 @@ extern "C" void jaegerize_span(mtev_json_object *message, const char *jaeger_url
   *batch_span = span;
   *batch->mutable_process() = span.process();
 
-  jaeger_client.send(req);
+  jaeger_client->send(req);
 
 }
 
-extern "C" void jaegerize_error(mtev_json_object *message, const char *jaeger_url)
-{
-  const JaegerClient &jaeger_client = get_jaeger_client(jaeger_url);
-
-  mtev_log_stream_t debug_jaeger = mtev_log_stream_find("debug/jaeger");
-
-  RETURN_IF_MISSING(error_json, message, "error");
-
-  RETURN_IF_MISSING(timestamp, message, "timestamp");
-  RETURN_IF_MISSING(timestamp_us, timestamp, "us");
-
-  const char *service_name = tm_service_name(message);
-  int64_t ts = mtev_json_object_get_int64(timestamp_us);
-  int mv = tm_apm_server_major_version(message);
-
-  mtev_json_object *context = NULL;
-  if (mv == 6) {
-    context = mtev_json_object_object_get(message, "context");
-  } else if (mv > 6) {
-    context = message;
-  }
-  RETURN_IF_MISSING(trace, message, "trace");
-
-  proto::Span span;
-
-  mtev_json_object *culprit_json = mtev_json_object_object_get(error_json, "culprit");
-  mtev_json_object *exception = mtev_json_object_object_get(error_json, "exception");
-  mtev_json_object *first_exception = NULL;
-  if (mv == 6) {
-    first_exception = exception;
-  } else if (mv > 6) {
-    // in APM server 7.x, the "exception" is actually an array and can contain multiple
-    int l = mtev_json_object_array_length(exception);
-    if (l > 0) {
-      first_exception = mtev_json_object_array_get_idx(exception, 0);
-    }
-  }
-
-  mtev_json_object *exception_message = NULL, *exception_type = NULL;
-  if (first_exception != NULL) {
-    exception_message = mtev_json_object_object_get(first_exception, "message");
-    exception_type = mtev_json_object_object_get(first_exception, "type");
-  }
-
-  /* the name of the operation will be chosen from this list of properties in priority order:
-   * 
-   * culprit
-   * exception_message
-   * exception_type
-   * the string "unknown error"
-   */
-  if (culprit_json != NULL) {
-    span.set_operation_name(mtev_json_object_get_string(culprit_json));
-  } else if (exception_message != NULL) {
-    span.set_operation_name(mtev_json_object_get_string(exception_message));
-  } else if (exception_type != NULL) {
-    span.set_operation_name(mtev_json_object_get_string(exception_type));
-  } else {
-    span.set_operation_name("unknown error");
-  }
-
-  proto::KeyValue* kind = span.add_tags();
-  kind->set_key("error");
-  kind->set_v_type(proto::ValueType::BOOL);
-  kind->set_v_bool(true);
-
-  proto::Log *log = span.add_logs();
-  log->mutable_timestamp()->set_seconds(ts / 1000000);
-  log->mutable_timestamp()->set_nanos((ts % 1000000) * 1000);
-
-  if (first_exception != NULL) {
-    if (culprit_json != NULL) {
-      proto::KeyValue* f = log->add_fields();
-      f->set_key("culprit");
-      f->set_v_type(proto::ValueType::STRING);
-      f->set_v_str(mtev_json_object_get_string(culprit_json));
-    }
-
-    if (exception_message != NULL) {
-      proto::KeyValue *f = log->add_fields();
-      f->set_key("message");
-      f->set_v_type(proto::ValueType::STRING);
-      f->set_v_str(mtev_json_object_get_string(exception_message));
-    }
-
-    mtev_json_object *exception_module = mtev_json_object_object_get(first_exception, "module");
-    if (exception_module != NULL) {
-      proto::KeyValue *f = log->add_fields();
-      f->set_key("module");
-      f->set_v_type(proto::ValueType::STRING);
-      f->set_v_str(mtev_json_object_get_string(exception_module));
-    }
-
-    if (exception_type != NULL) { 
-      proto::KeyValue *f = log->add_fields();
-      f->set_key("type");
-      f->set_v_type(proto::ValueType::STRING);
-      f->set_v_str(mtev_json_object_get_string(exception_type));
-    }
-
-    mtev_json_object *stacktrace = mtev_json_object_object_get(first_exception, "stacktrace");
-    if (stacktrace != NULL) {
-      char *st = build_stack_trace(stacktrace);
-      proto::KeyValue *f = log->add_fields();
-      f->set_key("stacktrace");
-      f->set_v_type(proto::ValueType::STRING);
-      f->set_v_str(st);
-      free(st);
-    }
-  }
-
-  mtev_json_object *request = NULL, *response = NULL, *system = NULL;
-  if (mv == 6) {
-    request = mtev_json_object_object_get(context, "request");
-    response = mtev_json_object_object_get(context, "response");
-    system = mtev_json_object_object_get(context, "system");
-  } else if (mv > 6) {
-    mtev_json_object *http = mtev_json_object_object_get(message, "http");
-    if (http) {
-      request = mtev_json_object_object_get(http, "request");
-      response = mtev_json_object_object_get(http, "response");
-    }
-    system = mtev_json_object_object_get(message, "host");
-  }
-
-  if (request != NULL) {
-    proto::KeyValue* f = log->add_fields();
-    f->set_key("request");
-    f->set_v_type(proto::ValueType::STRING);
-    f->set_v_str(mtev_json_object_get_string(request));
-  }
-
-  if (response != NULL) {
-    proto::KeyValue* f = log->add_fields();
-    f->set_key("response");
-    f->set_v_type(proto::ValueType::STRING);
-    f->set_v_str(mtev_json_object_get_string(response));
-  }
-
-  if (system != NULL) {
-    proto::KeyValue* f = log->add_fields();
-    f->set_key("system");
-    f->set_v_type(proto::ValueType::STRING);
-    f->set_v_str(mtev_json_object_get_string(system));
-  }
-
-  proto::Process *p = span.mutable_process();
-  p->set_service_name(service_name);
-
-  mtev_json_object *agent = NULL;
-  if (mv == 6) {
-    mtev_json_object *service = mtev_json_object_object_get(context, "service");
-    agent = mtev_json_object_object_get(service, "agent");
-  }
-  else if (mv > 6) {
-    agent = mtev_json_object_object_get(message, "agent");
-  }
-
-  if (agent != NULL) {
-    proto::KeyValue *e = p->add_tags();
-    e->set_key("elastic_apm_agent.name");
-    e->set_v_type(proto::ValueType::STRING);
-    e->set_v_str(mtev_json_object_get_string(mtev_json_object_object_get(agent, "name")));
-
-    e = p->add_tags();
-    e->set_key("elastic_apm_agent.version");
-    e->set_v_type(proto::ValueType::STRING);
-    e->set_v_str(mtev_json_object_get_string(mtev_json_object_object_get(agent, "version")));
-  }
-
-  const char *trace_id = mtev_json_object_get_string(mtev_json_object_object_get(trace, "id"));
-  struct trace_id tid;
-  fill_trace_id(trace_id, &tid);
-  span.set_trace_id(&tid, sizeof(tid));
-
-  const char *id = mtev_json_object_get_string(mtev_json_object_object_get(error_json, "id"));
-  struct trace_id error_id;
-  fill_trace_id(id, &error_id);
-  uint64_t sid = error_id.low;
-  span.set_span_id(&sid, sizeof(sid));
-  span.set_flags(1); // 1 means sampled, 2 means DEBUG
-
-  span.mutable_start_time()->set_seconds(ts / 1000000);
-  span.mutable_start_time()->set_nanos((ts % 1000000) * 1000);
-
-  span.mutable_duration()->set_seconds(0);
-  span.mutable_duration()->set_nanos(10000000);
-
-  /* handle the span refs */
-  mtev_json_object *parent_json = mtev_json_object_object_get(message, "parent");
-  if (parent_json) {
-    proto::SpanRef *parent = span.add_references();
-    parent->set_trace_id(&tid, sizeof(tid));
-    const char *parent_hex = mtev_json_object_get_string(mtev_json_object_object_get(parent_json, "id"));
-    uint64_t pid = hex2uint64BE(parent_hex, strlen(parent_hex));
-    parent->set_span_id(&pid, sizeof(pid));
-    parent->set_ref_type(proto::CHILD_OF);
-
-    mtev_log_stream_t debug_jaeger = mtev_log_stream_find("debug/jaeger");
-    mtevL(debug_jaeger, "Jaeger ERROR %s, trace: %s, parent: %s\n", 
-          id, trace_id, parent_hex);
-  }
-
-  jaeger::api_v2::PostSpansRequest req;
-  proto::Batch *batch = req.mutable_batch();
-  proto::Span *batch_span = batch->add_spans();
-  *batch_span = span;
-  *batch->mutable_process() = span.process();
-
-  jaeger_client.send(req);
-
-}
 

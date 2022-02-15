@@ -10,6 +10,9 @@ It also compares APM transaction latency to a threshold and converts the spans
 to Jaeger format and sends to Jaeger if the transactions are longer than the
 time threshold (or if there is a reported error with the transaction).
 
+This app supports Elastic APM server version >= 6.x.y and has been tested up to 
+version 7.9.1
+
 ## Running
 
 Pre-built images are hosted on [Docker hub](https://hub.docker.com/r/majorleaguebaseball/tracemate).  You can:
@@ -215,9 +218,7 @@ java](https://www.elastic.co/guide/en/apm/agent/java/1.x/supported-technologies-
 
 ### Elastic APM Server
 
-Tracemate was built with Elastic APM server 6.6. There are some JSON document
-schema changes in Elastic APM server 7.0 which tracemate has not been updated to
-deal with, until that happens, Elastic APM server 6.6.X is your best bet.
+Tracemate was initially built with Elastic APM server 6.6 and then upgraded to support 7.X.
 Crucially, Elastic APM server must be configured to output its documents to
 Kafka with a specific config:
 
@@ -286,12 +287,12 @@ partitioned properly for your expected volume of trace data. Recall from the
 default) in order to get very accurate latency metrics produced. So size your
 cluster appropriately.
 
-@MLB we use a 10 node `n1-standard-4` cluster (on Google Cloud) with 500GB SSD
-persistent disks and a topic replication factor of 2 where each topic has 100
-partitions. Over the past 30 days, we haven't see any node go above 15% cpu or a
-write rate over 1MB/second on any individual node. We are purposely sized for 5X
-headroom in operations to deal with expected (and unexpected growth). Size
-yourself according to your needs.
+@MLB we use a 6 node `n2d-standard-4` cluster (on Google Cloud) with a 1.1TB
+local NVMe scratch disk raid array and a topic replication factor of 2 where
+each topic has 100 partitions. Over the past 30 days, we haven't see any node go
+above 15% cpu or a write rate over 1MB/second on any individual node. We are
+purposely sized for 5X headroom in operations to deal with expected (and
+unexpected growth). Size yourself according to your needs.
 
 The kafka cluster will require the topics mentioned in the last section as well
 as a few specialized topics: `tracemate_aggregates`, `tracemate_urls`, and
@@ -411,7 +412,7 @@ partitions.
 ### Teams
 ```
   <teams>
-    <team name="myteam" metric_submission_url="https://api.circonus.com/module/httptrap/c10874ff-63a2-4f74-8a2d-0c2e5b87be5b/mys3cr3t" jaeger_dest_url="your-jaeger-collector:14250" collect_host_level_metrics="false" circonus_api_key="example-api-key" check_id="example-numeric-check-id-associated-with-http-trap-check">
+    <team name="myteam" metric_submission_url="https://api.circonus.com/module/httptrap/c10874ff-63a2-4f74-8a2d-0c2e5b87be5b/mys3cr3t" jaeger_dest_url="your-jaeger-collector:14250" collect_host_level_metrics="false">
       <path_allowlist>
         <path>/</path>
       </path_allowlist>
@@ -440,18 +441,12 @@ one circonus account and one jaeger instance.
 > Importantly, the services as configured in `Elastic APM Agent` must have the team prefix in order to be matched with the team configuration in the
 > configuration file.  If you use an organization model and your <team> is called: "acme", your service names must be prefixed with: "acme-"
 
-Each `<team>` definition has 4 important member fields, and two optional fields:
+Each `<team>` definition has 3 important member fields:
 
 * `metric_submission_url` - the Circonus HTTPTrap check URL to send synthesized
   metrics to
 * `jaeger_dest_url` - the jaeger collector host/port where the jaeger gRPC
   listener is running to send jaeger trace data
-* `circonus_api_key` - An API key that will be used to generate graphs and
-  dashboards.
-* `check_id` - The numeric check id associated with the `metric_submission_url`.
-  this can be found under the https://account-name.circonus.com/checks?type=httptrap
-  address, and will typically be a six digit integer. This is used for graph 
-  generation.
 * `collect_host_level_metrics` - Defaults to "false". If set to "true" will
   create metrics that track data at the host level. Specifically, this means
   that for every metric generated (see `Metrics` below), tracemate will generate

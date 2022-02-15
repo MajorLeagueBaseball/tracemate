@@ -64,8 +64,9 @@ maybe_create_graph(team_data_t *td, const char *path, mtev_hash_table *values)
     mtev_dyn_buffer_destroy(&contents);
 
     /* parse the resolved json and get the graph title */
-    mtev_json_object *o = mtev_json_tokener_parse(resolved);
-    if (o == NULL) {
+    enum mtev_json_tokener_error error;
+    mtev_json_object *o = mtev_json_tokener_parse(resolved, &error);
+    if (o == NULL || error != mtev_json_tokener_success) {
       mtevL(mtev_error, "Resolved json from %s is unparseable\n", path);
       free(resolved);
       goto bail;
@@ -195,6 +196,7 @@ tm_create_visuals(mtev_hash_table *teams)
       mtev_hash_store(&values, "slo_budget_limit_as_percent", strlen("slo_budget_limit_as_percent"), strdup("0.5"));
       mtev_hash_store(&values, "slo_budget_length", strlen("slo_budget_length"), strdup("4w"));
       mtev_hash_store(&values, "top_count", strlen("top_count"), strdup("15"));
+      mtev_hash_store(&values, "team", strlen("team"), strdup(team));
 
       /* use the jaeger threshold as the latency SLO level 
        * Things that are interesting enough to trace are SLO violators? 

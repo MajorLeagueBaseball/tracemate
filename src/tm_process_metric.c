@@ -24,10 +24,13 @@
 
 bool process_metric_message(topic_stats_t *stats, mtev_json_object *message)
 {
+  char metric_name[4096];
   char tag_string[3172];
   char agg_tag_string[2048];
   char team[128];
   uint64_t timestamp_ms;
+  metric_key_t *key = NULL;
+  metric_value_t *value = NULL;
 
   mtev_hash_table *team_metrics = pre_process(message, team, tag_string, &timestamp_ms);
   if (team_metrics == NULL) return false;
@@ -38,8 +41,330 @@ bool process_metric_message(topic_stats_t *stats, mtev_json_object *message)
   team_data_t *td = get_team_data(team);
   int mv = tm_apm_server_major_version(message);
 
+  char *version = tm_apm_server_version(message);
+
+  const char *service_string = tm_service_name(message);
+  if (service_string == NULL) {
+    mtevL(tm_error, "'metric' event is malformed, service name missing\n");
+    stats_add64(stats->messages_errored, 1);
+    return false;
+  }
+
+  uint64_t metric_flush_freq_ms = get_metric_flush_frequency_ms(service_string);
   /* build aggregate metrics, this replaces host specific info with `all` */
-  uint64_t agg_timestamp = ceil_timestamp(timestamp_ms);
+  uint64_t agg_timestamp = center_timestamp(timestamp_ms, metric_flush_freq_ms);
+
+  if (version && strncmp(version, "7.15", strlen(version) > strlen("7.15") ? strlen("7.15") : strlen(version)) == 0) {
+    
+    /**
+     * after 7.15 Elastic APM started to flatten the telemetry produced in it's `metric` documents.
+     * They went from a nested structure:
+     * 
+     *   "nodejs": {
+     *     "memory": {
+     *        "heap": {
+     *          "allocated": {
+     *            "bytes": 3.7138432e+07
+     *          },
+     *          "used": {
+     *            "bytes": 2.9087504e+07
+     *          }
+     *        }
+     *      }
+     *    },
+     * 
+     * To a flat representation:
+     *   "nodejs.memory.external.bytes": 2.0242739e+07,
+     */
+    mtev_json_object *o = NULL;
+
+    /** 
+     * system
+     */
+    o = mtev_json_object_object_get(message, "system.memory.total");
+    if (o) {
+      mtev_json_object *total = o;
+      if (td->collect_host_level_system) {
+        snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "system - memory - total", tag_string);
+        key = make_metric_key(metric_name, timestamp_ms);
+        key->immediate_flush = true;
+        value = make_numeric_value(mtev_json_object_get_double(total));
+        mtev_hash_replace(team_metrics, (const char *)key, key->key_len, value, metric_key_free, metric_value_free);
+      }
+
+      /* aggregate version */
+      snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "system - memory - total", agg_tag_string);
+      update_numeric(td, team_metrics, metric_name, true, mtev_json_object_get_double(total), agg_timestamp);
+    }
+
+    o = mtev_json_object_object_get(message, "system.memory.actual.free");
+    if (o) {
+      mtev_json_object *freemem = o;
+      if (td->collect_host_level_system) {
+        snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "system - memory - free", tag_string);
+        key = make_metric_key(metric_name, timestamp_ms);
+        key->immediate_flush = true;
+        value = make_numeric_value(mtev_json_object_get_double(freemem));
+        mtev_hash_replace(team_metrics, (const char *)key, key->key_len, value, metric_key_free, metric_value_free);
+      }
+
+      /* aggregate version */
+      snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "system - memory - free", agg_tag_string);
+      update_numeric(td, team_metrics, metric_name, true, mtev_json_object_get_double(freemem), agg_timestamp);
+    }
+
+    o = mtev_json_object_object_get(message, "system.process.cpu.total.norm.pct");
+    if (o) {
+      mtev_json_object *pct = o;
+      if (td->collect_host_level_system) {
+        snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "system - process - cpu - total - pct", tag_string);
+        key = make_metric_key(metric_name, timestamp_ms);
+        key->immediate_flush = true;
+        value = make_numeric_value(mtev_json_object_get_double(pct));
+        mtev_hash_replace(team_metrics, (const char *)key, key->key_len, value, metric_key_free, metric_value_free);
+      }
+
+      /* aggregate version */
+      snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "system - process - cpu - total - pct", agg_tag_string);
+      update_numeric(td, team_metrics, metric_name, true, mtev_json_object_get_double(pct), agg_timestamp);
+    }
+
+    o = mtev_json_object_object_get(message, "system.process.memory.size");
+    if (o) {
+      mtev_json_object *size = o;
+      if (td->collect_host_level_system) {
+        snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "system - process - memory - size", tag_string);
+        key = make_metric_key(metric_name, timestamp_ms);
+        key->immediate_flush = true;
+        value = make_numeric_value(mtev_json_object_get_double(size));
+        mtev_hash_replace(team_metrics, (const char *)key, key->key_len, value, metric_key_free, metric_value_free);
+      }
+
+      /* aggregate version */
+      snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "system - process - memory - size", agg_tag_string);
+      update_numeric(td, team_metrics, metric_name, true, mtev_json_object_get_double(size), agg_timestamp);
+    }
+
+
+    o = mtev_json_object_object_get(message, "system.cpu.total.norm.pct");
+    if (o) {
+      mtev_json_object *pct = o;
+      if (td->collect_host_level_system) {
+        snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "system - cpu - total - pct", tag_string);
+        key = make_metric_key(metric_name, timestamp_ms);
+        key->immediate_flush = true;
+        value = make_numeric_value(mtev_json_object_get_double(pct));
+        mtev_hash_replace(team_metrics, (const char *)key, key->key_len, value, metric_key_free, metric_value_free);
+      }
+
+      /* aggregate version */
+      snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "system - cpu - total - pct", agg_tag_string);
+      update_numeric(td, team_metrics, metric_name, true, mtev_json_object_get_double(pct), agg_timestamp);
+    }
+
+    /**
+     * jvm
+     */
+    o = mtev_json_object_object_get(message, "jvm.thread.count");
+    if (o) {
+      mtev_json_object *count = o;
+      if (count) {
+        if (td->collect_host_level_system) {
+          snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - thread - count", tag_string);
+          key = make_metric_key(metric_name, timestamp_ms);
+          key->immediate_flush = true;
+          value = make_integer_value(mtev_json_object_get_uint64(count));
+          mtev_hash_replace(team_metrics, (const char *)key, key->key_len, value, metric_key_free, metric_value_free);
+        }
+        snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - thread - count", agg_tag_string);
+        update_numeric(td, team_metrics, metric_name, true, (double)mtev_json_object_get_uint64(count), agg_timestamp);
+      }
+    }
+
+    o = mtev_json_object_object_get(message, "jvm.memory.heap.committed");
+    if (o) {
+      mtev_json_object *committed = o;
+      if (td->collect_host_level_system) {
+        snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - heap - committed", tag_string);
+        key = make_metric_key(metric_name, timestamp_ms);
+        key->immediate_flush = true;
+        value = make_numeric_value(mtev_json_object_get_double(committed));
+        mtev_hash_replace(team_metrics, (const char *)key, key->key_len, value, metric_key_free, metric_value_free);
+      }
+
+      /* aggregate version */
+      snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - heap - committed", agg_tag_string);
+      update_average(td, team_metrics, metric_name, true, mtev_json_object_get_double(committed), agg_timestamp);
+    }
+
+    o = mtev_json_object_object_get(message, "jvm.memory.heap.used");
+    if (o) {
+      mtev_json_object *used = o;
+      if (td->collect_host_level_system) {
+        snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - heap - used", tag_string);
+        key = make_metric_key(metric_name, timestamp_ms);
+        key->immediate_flush = true;
+        value = make_numeric_value(mtev_json_object_get_double(used));
+        mtev_hash_replace(team_metrics, (const char *)key, key->key_len, value, metric_key_free, metric_value_free);
+      }
+
+      /* aggregate version */
+      snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - heap - used", agg_tag_string);
+      update_average(td, team_metrics, metric_name, true, mtev_json_object_get_double(used), agg_timestamp);
+    }
+
+    o = mtev_json_object_object_get(message, "jvm.memory.heap.max");
+    if (o) {
+      mtev_json_object *max = o;
+      if (td->collect_host_level_system) {
+        snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - heap - max", tag_string);
+        key = make_metric_key(metric_name, timestamp_ms);
+        key->immediate_flush = true;
+        value = make_numeric_value(mtev_json_object_get_double(max));
+        mtev_hash_replace(team_metrics, (const char *)key, key->key_len, value, metric_key_free, metric_value_free);
+      }
+
+      /* aggregate version */
+      snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - heap - max", agg_tag_string);
+      update_average(td, team_metrics, metric_name, true, mtev_json_object_get_double(max), agg_timestamp);
+    }
+
+    o = mtev_json_object_object_get(message, "jvm.memory.non_heap.committed");
+    if (o) {
+      mtev_json_object *committed = o;
+      if (td->collect_host_level_system) {
+        snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - non_heap - committed", tag_string);
+        key = make_metric_key(metric_name, timestamp_ms);
+        key->immediate_flush = true;
+        value = make_numeric_value(mtev_json_object_get_double(committed));
+        mtev_hash_replace(team_metrics, (const char *)key, key->key_len, value, metric_key_free, metric_value_free);
+      }
+
+      /* aggregate version */
+      snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - non_heap - committed", agg_tag_string);
+      update_average(td, team_metrics, metric_name, true, mtev_json_object_get_double(committed), agg_timestamp);
+    }
+
+    o = mtev_json_object_object_get(message, "jvm.memory.non_heap.used");
+    if (o) {
+      mtev_json_object *used = o;
+      if (td->collect_host_level_system) {
+        snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - non_heap - used", tag_string);
+        key = make_metric_key(metric_name, timestamp_ms);
+        key->immediate_flush = true;
+        value = make_numeric_value(mtev_json_object_get_double(used));
+        mtev_hash_replace(team_metrics, (const char *)key, key->key_len, value, metric_key_free, metric_value_free);
+      }
+
+      /* aggregate version */
+      snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - non_heap - used", agg_tag_string);
+      update_average(td, team_metrics, metric_name, true, mtev_json_object_get_double(used), agg_timestamp);
+    }
+
+    o = mtev_json_object_object_get(message, "jvm.memory.non_heap.max");
+    if (o) {
+      mtev_json_object *max = o;
+      if (td->collect_host_level_system) {
+        snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - non_heap - max", tag_string);
+        key = make_metric_key(metric_name, timestamp_ms);
+        key->immediate_flush = true;
+        value = make_numeric_value(mtev_json_object_get_double(max));
+        mtev_hash_replace(team_metrics, (const char *)key, key->key_len, value, metric_key_free, metric_value_free);
+      }
+
+      /* aggregate version */
+      snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - non_heap - max", agg_tag_string);
+      update_average(td, team_metrics, metric_name, true, mtev_json_object_get_double(max), agg_timestamp);
+    }
+
+    /* gc has extra info in the context object we are ignoring for now */
+    mtev_json_object *time = mtev_json_object_object_get(message, "jvm.gc.time");
+    mtev_json_object *count = mtev_json_object_object_get(message, "jvm.gc.count");
+    mtev_json_object *alloc = mtev_json_object_object_get(message, "jvm.gc.alloc");
+    if (time && count) {
+      if (td->collect_host_level_system) {
+        snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - gc - total_latency", tag_string);
+        uint64_t ts = center_timestamp(timestamp_ms, metric_flush_freq_ms);
+        update_numeric(td, team_metrics, metric_name, true, mtev_json_object_get_uint64(time) / 1000.0, ts);
+      }
+
+      /* aggregate version */
+      snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - gc - total_latency", agg_tag_string);
+      update_numeric(td, team_metrics, metric_name, true, mtev_json_object_get_double(time) / 1000.0, agg_timestamp);
+
+      if (td->collect_host_level_system) {
+        snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - gc - count", tag_string);
+        update_counter(td, team_metrics, metric_name, false, mtev_json_object_get_uint64(count), timestamp_ms);
+      }
+
+      /* aggregate version */
+      snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - gc - count", agg_tag_string);
+      update_average(td, team_metrics, metric_name, true, mtev_json_object_get_uint64(count), agg_timestamp);
+
+    }
+    if (alloc) {
+      if (td->collect_host_level_system) {
+        snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - gc - alloc", tag_string);
+        update_numeric(td, team_metrics, metric_name, false, mtev_json_object_get_double(alloc), timestamp_ms);
+      }
+
+      /* aggregate version */
+      snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - gc - alloc", agg_tag_string);
+      update_average(td, team_metrics, metric_name, true, mtev_json_object_get_double(alloc), agg_timestamp);
+    }
+
+
+    /**
+     * nodejs
+     */
+    o = mtev_json_object_object_get(message, "nodejs.memory.heap.used.bytes");
+    if (o) {
+      if (td->collect_host_level_system) {
+        snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "nodejs - memory - heap - used", tag_string);
+        key = make_metric_key(metric_name, timestamp_ms);
+        key->immediate_flush = true;
+        value = make_numeric_value(mtev_json_object_get_double(o));
+        mtev_hash_replace(team_metrics, (const char *)key, key->key_len, value, metric_key_free, metric_value_free);
+      }
+
+      /* aggregate version */
+      snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "nodejs - memory - heap - used", agg_tag_string);
+      update_average(td, team_metrics, metric_name, true, mtev_json_object_get_double(o), agg_timestamp);
+    }
+
+    o = mtev_json_object_object_get(message, "nodejs.memory.heap.allocated.bytes");
+    if (o) {
+      if (td->collect_host_level_system) {
+        snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "nodejs - memory - heap - allocated", tag_string);
+        key = make_metric_key(metric_name, timestamp_ms);
+        key->immediate_flush = true;
+        value = make_numeric_value(mtev_json_object_get_double(o));
+        mtev_hash_replace(team_metrics, (const char *)key, key->key_len, value, metric_key_free, metric_value_free);
+      }
+
+      /* aggregate version */
+      snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "nodejs - memory - heap - allocated", agg_tag_string);
+      update_average(td, team_metrics, metric_name, true, mtev_json_object_get_double(o), agg_timestamp);
+    }
+
+    o = mtev_json_object_object_get(message, "nodejs.eventloop.delay.avg.ms");
+    if (o) {
+      double millis = mtev_json_object_get_double(o);
+      double usecs = millis * 1000;
+      uint64_t mics = (uint64_t)usecs;
+      if (td->collect_host_level_system) {
+        snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "nodejs - eventloop - latency", tag_string);
+        uint64_t ts = center_timestamp(timestamp_ms, metric_flush_freq_ms);
+        update_histogram(td, team_metrics, metric_name, true, mics, ts);
+      }
+      /* aggregate version */
+      snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "nodejs - eventloop - latency", agg_tag_string);
+      update_histogram(td, team_metrics, metric_name, true, mics, agg_timestamp);
+    }
+
+    free(version);
+    return false;
+  }
 
   mtev_json_object *system = mtev_json_object_object_get(message, "system");
   mtev_json_object *jvm = mtev_json_object_object_get(message, "jvm");
@@ -197,10 +522,6 @@ bool process_metric_message(topic_stats_t *stats, mtev_json_object *message)
   * 
   */
 
-  char metric_name[4096];
-  /* now build the various metric names and append the tag list */
-  metric_key_t *key = NULL;
-  metric_value_t *value = NULL;
   if (system) {
     mtev_json_object *mem = mtev_json_object_object_get(system, "memory");
     if (mem) {
@@ -406,15 +727,14 @@ bool process_metric_message(topic_stats_t *stats, mtev_json_object *message)
       mtev_json_object *alloc = mtev_json_object_object_get(gc, "alloc");
       if (time && count) {
         if (td->collect_host_level_system) {
-          snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - gc - latency", tag_string);
-          uint64_t ts = ceil_timestamp(timestamp_ms);
-          update_histogram(td, team_metrics, metric_name, true, mtev_json_object_get_uint64(time), ts);
+          snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - gc - total_latency", tag_string);
+          uint64_t ts = center_timestamp(timestamp_ms, metric_flush_freq_ms);
+          update_numeric(td, team_metrics, metric_name, true, mtev_json_object_get_uint64(time) / 1000.0, ts);
         }
 
         /* aggregate version */
-        snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - gc - latency", agg_tag_string);
-        update_histogram(td, team_metrics, metric_name, true, mtev_json_object_get_double(time), agg_timestamp);
-
+        snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - gc - total_latency", agg_tag_string);
+        update_numeric(td, team_metrics, metric_name, true, mtev_json_object_get_double(time) / 1000.0, agg_timestamp);
 
         if (td->collect_host_level_system) {
           snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "jvm - memory - gc - count", tag_string);
@@ -495,12 +815,12 @@ bool process_metric_message(topic_stats_t *stats, mtev_json_object *message)
             double usecs = millis * 1000;
             uint64_t mics = (uint64_t)usecs;
             if (td->collect_host_level_system) {
-              snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "nodejs - memory - eventloop - latency", tag_string);
-              uint64_t ts = ceil_timestamp(timestamp_ms);
+              snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "nodejs - eventloop - latency", tag_string);
+              uint64_t ts = center_timestamp(timestamp_ms, metric_flush_freq_ms);
               update_histogram(td, team_metrics, metric_name, true, mics, ts);
             }
             /* aggregate version */
-            snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "nodejs - memory - eventloop - latency", agg_tag_string);
+            snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "nodejs - eventloop - latency", agg_tag_string);
             update_histogram(td, team_metrics, metric_name, true, mics, agg_timestamp);
           }
         }
@@ -540,7 +860,7 @@ bool process_metric_message(topic_stats_t *stats, mtev_json_object *message)
       if (total_pause_ns && count) {
         if (td->collect_host_level_system) {
           snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "golang - memory - gc - total_pause_ns", tag_string);
-          uint64_t ts = ceil_timestamp(timestamp_ms);
+          uint64_t ts = center_timestamp(timestamp_ms, metric_flush_freq_ms);
           update_counter(td, team_metrics, metric_name, false, mtev_json_object_get_double(total_pause_ns), ts);
         }
 
@@ -565,7 +885,7 @@ bool process_metric_message(topic_stats_t *stats, mtev_json_object *message)
     if (goroutines) {
       if (td->collect_host_level_system) {
         snprintf(metric_name, sizeof(metric_name) - 1, "%s|ST[%s]", "golang - goroutines", tag_string);
-        uint64_t ts = ceil_timestamp(timestamp_ms);
+        uint64_t ts = center_timestamp(timestamp_ms, metric_flush_freq_ms);
         update_average(td, team_metrics, metric_name, false, mtev_json_object_get_uint64(goroutines), ts);
       }
       /* aggregate version */

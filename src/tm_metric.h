@@ -126,7 +126,7 @@ typedef struct team_data {
   mtev_boolean rollup_high_cardinality;
   uint64_t histogram_threshold_us;
   uint64_t transaction_lookback_secs;
-  uint64_t apdex_satisfied_threshold_ms;
+  uint64_t metric_flush_frequency_ms;
 } team_data_t;
 
 

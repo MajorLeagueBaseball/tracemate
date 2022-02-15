@@ -49,7 +49,6 @@ void tm_transaction_store_close();
  */
 bool tm_transaction_store_put(const char *id, size_t id_len, tm_transaction_store_entry_t *entry, int ttl);
 bool tm_transaction_store_add_child(const char *trace_id, size_t id_len, mtev_json_object *child, int ttl);
-size_t tm_transaction_store_get_children(const char *trace_id, size_t id_len, tm_transaction_store_entry_t **children);
 tm_transaction_store_entry_t *tm_transaction_store_get(const char *id, size_t id_len);
 
 void tm_transaction_store_mark_traceable(const char *trace_id, size_t id_len);

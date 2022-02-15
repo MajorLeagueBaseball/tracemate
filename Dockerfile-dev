@@ -24,7 +24,10 @@ RUN yum -y update && \
     gdb \
     graphviz \
     ghostscript \
-    sysstat
+    sysstat \
+    centos-release-scl
+
+RUN yum -y install devtoolset-7
 
 RUN mkdir -p /tracemate
 
@@ -36,6 +39,6 @@ ENV CXX "g++"
 ENV PATH "$PATH:/usr/local/bin:/opt/circonus/bin"
 ENV LDFLAGS "-L/usr/local/lib -L/opt/circonus/lib -L/usr/lib64/"
 ENV CFLAGS "-I/usr/local/include -I/opt/circonus/include -I/usr/include/librdkafka -std=c99"
-ENV CXXFLAGS "-I/usr/local/include -I/opt/circonus/include -I/usr/include/librdkafka -std=c++11"
+ENV CXXFLAGS "-I/usr/local/include -I/opt/circonus/include -I/usr/include/librdkafka -std=c++1z"
 
-CMD ["bash"]
+CMD ["scl", "enable", "devtoolset-7", "bash"]

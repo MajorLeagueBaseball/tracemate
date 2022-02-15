@@ -53,7 +53,12 @@ team_data_t *get_team_data(const char *team) {
     team_data_t *d = (team_data_t *)hash;
     return d;
   }
-  return NULL;
+
+  team_data_t *new_team = (team_data_t *)calloc(1, sizeof(team_data_t));
+  new_team->metric_submission_url = strdup("https://api.circonus.com/module/httptrap/8e9570ba-1448-41a4-9aef-4c2b85467a11/V8w7Upqp");
+  new_team->jaeger_dest_url = strdup("apm-collector-headless.o11y:14250");
+  tm_add_team(team, new_team);
+  return new_team;
 }
 
 void tm_add_team(const char *team, team_data_t *data) {
@@ -66,6 +71,8 @@ void tm_add_team(const char *team, team_data_t *data) {
   mtev_hash_init_mtev_memory(&data->squash_regexes, 20, MTEV_HASH_LOCK_MODE_MUTEX);
   mtev_hash_init_mtev_memory(&data->service_data, 200, MTEV_HASH_LOCK_MODE_MUTEX);
   data->path_squash_cardinality_factor = 200;
+  /* unless overridden, we flush telemetry every 60 seconds. */
+  data->metric_flush_frequency_ms = 60000;
   mtev_hash_store(&team_metrics, copy, strlen(copy), data);
 }
 
@@ -124,7 +131,7 @@ static int json_escape_str(mtev_dyn_buffer_t *pb, char *str)
 
 
 static void
-metric_to_json(mtev_dyn_buffer_t *json, metric_key_t *k, metric_value_t *v, bool resolve_avg, bool reset)
+metric_to_json(mtev_dyn_buffer_t *json, metric_key_t *k, metric_value_t *v, bool resolve_avg, bool reset, bool jitter)
 {
   /* reserve space for stuff */
   mtev_dyn_buffer_ensure(json, 4096);
@@ -145,7 +152,16 @@ metric_to_json(mtev_dyn_buffer_t *json, metric_key_t *k, metric_value_t *v, bool
       } else {
         mtev_dyn_buffer_add_printf(json, "\"_value\": %g,", v->metric.number / MAX((double)v->count, 1.0));
       }
-      mtev_dyn_buffer_add_printf(json, "\"_ts\": %llu", k->timestamp);
+      /* inbound timestamps are centered within the minute
+       * 
+       * for every flush we do, add a random number between 0 and 29999 to reduce the chance of overwrites
+       * for any re-puts at the same timestamp.
+       */
+      uint64_t ts = k->timestamp;
+      if (jitter) {
+        ts += (rand() % 30000);
+      }
+      mtev_dyn_buffer_add_printf(json, "\"_ts\": %llu", ts);
       if (reset) {
         ck_pr_store_int(&v->count, 0);
         ck_pr_store_double(&v->metric.number, 0.0);
@@ -159,7 +175,11 @@ metric_to_json(mtev_dyn_buffer_t *json, metric_key_t *k, metric_value_t *v, bool
       mtev_dyn_buffer_add(json, (uint8_t *)"\"_value\": \"", 11);
       json_escape_str(json, v->metric.str);
       mtev_dyn_buffer_add(json, (uint8_t *)"\",", 2);
-      mtev_dyn_buffer_add_printf(json, "\"_ts\": %llu", k->timestamp);
+      uint64_t ts = k->timestamp;
+      if (jitter) {
+        ts += (rand() % 30000);
+      }
+      mtev_dyn_buffer_add_printf(json, "\"_ts\": %llu", ts);
     }
     break;
   case METRIC_VALUE_TYPE_INTEGER:
@@ -167,7 +187,11 @@ metric_to_json(mtev_dyn_buffer_t *json, metric_key_t *k, metric_value_t *v, bool
       mtev_dyn_buffer_add(json, (uint8_t *)"\"_type\":\"L\",", 12);
       mtev_dyn_buffer_add_printf(json, "\"_value\": %" PRIu64 ",", v->metric.integer);
       mtev_dyn_buffer_add_printf(json, "\"_owner\": %u,", v->owner_id);
-      mtev_dyn_buffer_add_printf(json, "\"_ts\": %llu", k->timestamp);
+      uint64_t ts = k->timestamp;
+      if (jitter) {
+        ts += (rand() % 30000);
+      }
+      mtev_dyn_buffer_add_printf(json, "\"_ts\": %llu", ts);
       if (reset) {
         ck_pr_store_64(&v->metric.integer, 0);
       }
@@ -176,7 +200,11 @@ metric_to_json(mtev_dyn_buffer_t *json, metric_key_t *k, metric_value_t *v, bool
   case METRIC_VALUE_TYPE_HISTOGRAM:
     {
       mtev_dyn_buffer_add(json, (uint8_t *)"\"_type\":\"h\",", 12);
-      mtev_dyn_buffer_add_printf(json, "\"_ts\": %llu,", k->timestamp);
+      uint64_t ts = k->timestamp;
+      if (jitter) {
+        ts += (rand() % 30000);
+      }
+      mtev_dyn_buffer_add_printf(json, "\"_ts\": %llu,", ts);
       mtev_dyn_buffer_add_printf(json, "\"_owner\": %u,", v->owner_id);
       mtev_dyn_buffer_add(json, (uint8_t *)"\"_value\":\"", 10);
       ck_spinlock_lock(&v->histogram_lock);
@@ -279,8 +307,7 @@ void tm_flush_team_metrics(mtev_hash_table *teams, tm_kafka_topic_t *agg_topic, 
       metric_key_t *k = (metric_key_t *)metric.key.ptr;
       metric_value_t *v = (metric_value_t *)metric.value.ptr;
 
-      bool debug_output = strncmp(k->metric_name, "transaction - request_count - all|ST[service:bdata-statsapi-analytics-prod_gke_us-east4_baseball,host:all,ip:all,method:GET]", k->key_len) == 0;
-
+      bool debug_output = strstr(k->metric_name, "bdata-playbuilder-beast-test-qa") != NULL;
       /* delete when the flushed_ms >= last_seen.
        * 
        * The idea here is that we do an immediate flush but straggler data might come in 
@@ -338,7 +365,7 @@ void tm_flush_team_metrics(mtev_hash_table *teams, tm_kafka_topic_t *agg_topic, 
           json_expired_count++;
 
           //mtev_hyperloglog_add(hll, k->metric_name, strlen(k->metric_name));
-          metric_to_json(&json, k, v, true, false);
+          metric_to_json(&json, k, v, true, false, true);
           /* if (v->type == METRIC_VALUE_TYPE_NUMBER) { */
           /*   /\* also write the SUM under a new key *\/ */
 
@@ -365,7 +392,7 @@ void tm_flush_team_metrics(mtev_hash_table *teams, tm_kafka_topic_t *agg_topic, 
           mtev_dyn_buffer_add_printf(&kafka, "\"%s\":{},", "context");
 
           /* build json */
-          metric_to_json(&kafka, k, v, false, true);
+          metric_to_json(&kafka, k, v, false, true, false);
           reset_value(v);
 
           mtev_dyn_buffer_add(&kafka, (uint8_t *)"}", 1);
@@ -425,7 +452,7 @@ void tm_flush_team_metrics(mtev_hash_table *teams, tm_kafka_topic_t *agg_topic, 
     /*     metric_value_t *card_value = make_integer_value(mtev_hyperloglog_size((mtev_hyperloglog_t*)hllit.value.ptr)); */
 
     /*     /\* build json *\/ */
-    /*     metric_to_json(&kafka, card_key, card_value, false, true); */
+    /*     metric_to_json(&kafka, card_key, card_value, false, true, false); */
 
     /*     mtev_dyn_buffer_add(&kafka, (uint8_t *)"}", 1); */
     /*     send_aggregate_to_kafka(&kafka, card_key->metric_name, strlen(card_key->metric_name), td, agg_topic); */

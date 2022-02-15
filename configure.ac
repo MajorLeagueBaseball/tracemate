@@ -195,11 +195,15 @@ AC_MSG_RESULT([$XSLTLIBS])
 
 AC_CHECK_FUNC(xsltParseStylesheetDoc, , [AC_MSG_ERROR(*** libxslt is required ***)])
 
+CPPFLAGS="$CPPFLAGS -Iproto"
+CXXFLAGS="$CXXFLAGS -Iproto"
+
 SHCFLAGS="$PICFLAGS $CFLAGS"
 SHLDFLAGS=`mtev-config --shldflags 2>/dev/null`
 #SHLD=`mtev-config --shld 2>/dev/null`
 MODLIBS=`mtev-config --libs 2>/dev/null`
 SHCPPFLAGS="$PICFLAGS $CPPFLAGS"
+CXXFLAGS="$CXXFLAGS -std=c++1z"
 AC_SUBST(SHCFLAGS)
 AC_SUBST(SHCPPFLAGS)
 AC_SUBST(LD)
@@ -208,7 +212,7 @@ AC_SUBST(SHLDFLAGS)
 AC_SUBST(MODLIBS)
 AC_SUBST(CXXFLAGS)
 
-CFLAGS="$CFLAGS -Wall -Werror"
+CFLAGS="$CFLAGS -Wall -Werror -Iproto"
 LIBS="-lstdc++ -lprotobuf -llmdb -lgrpc++ -lgrpc++_reflection -lgrpc -lgpr -lcares -laddress_sorting -labsl_strings -labsl_base -labsl_throw_delegate -labsl_str_format_internal -labsl_bad_optional_access -labsl_raw_logging_internal -labsl_int128 $LIBS -ldl"
 
 AC_OUTPUT([

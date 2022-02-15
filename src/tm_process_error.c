@@ -43,6 +43,15 @@ bool process_error_message(topic_stats_t *stats, mtev_json_object *message, int 
     return false;
   }
 
+  const char *service_string = tm_service_name(message);
+  if (service_string == NULL) {
+    mtevL(tm_error, "'error' event is malformed, service name missing\n");
+    stats_add64(stats->messages_errored, 1);
+    return false;
+  }
+
+  uint64_t metric_flush_freq_ms = get_metric_flush_frequency_ms(service_string);
+
   mtev_json_object *error = mtev_json_object_object_get(message, "error");
   if (error == NULL) {
     mtevL(tm_error, "'error' event is malformed, no 'error' object\n");
@@ -63,7 +72,7 @@ bool process_error_message(topic_stats_t *stats, mtev_json_object *message, int 
   tm_transaction_store_add_child(trace_id, strlen(trace_id), message, ttl);
   tm_transaction_store_mark_traceable(trace_id, strlen(trace_id));
 
-  uint64_t agg_timestamp = ceil_timestamp(timestamp);
+  uint64_t agg_timestamp = center_timestamp(timestamp, metric_flush_freq_ms);
 
   /* certain high cardinality metrics can contain a special tag that prevents them from being rolled up
    * for longer term storage

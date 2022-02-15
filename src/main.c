@@ -77,7 +77,9 @@ static int foreground = 0;
 static int debug = 0;
 static char *glider = NULL;
 static mtev_hash_table threshold_hash;
+static mtev_hash_table flushes_hash;
 static uint64_t default_jaeger_threshold_us = 2000 * 1000; // ms to us
+static uint64_t default_metric_flush_freq_ms = 60 * 1000; 
 static tm_kafka_t *kafka_conn = NULL;
 static tm_kafka_t *kafka_producer_conn = NULL;
 static tm_kafka_topic_t *agg_topic = NULL;
@@ -196,9 +198,7 @@ kafka_read(eventer_t e, int mask, void *closure, struct timeval *tv)
     tm_kafka_get_high_watermark(t->topic, &t->high_watermark);
     if (t->kafka_offset > 0 && t->high_watermark > t->kafka_offset) {
       t->kafka_lag = t->high_watermark - t->kafka_offset;
-    } else {
-      t->kafka_lag = 0;
-    }
+    } 
     mtevL(tm_debug, "Kafka lag: %" PRIu64 "\n", t->kafka_lag);
 
     tm_kafka_poll(kafka_conn);
@@ -293,12 +293,14 @@ trigger_transaction_cleanup(eventer_t e, int mask, void *closure, struct timeval
 {
   /* trigger the flush jobq */
   eventer_t enew = eventer_alloc_asynch(transaction_clean, closure);
-  eventer_add_asynch(transaction_clean_jobq, enew);
+  if (eventer_try_add_asynch(transaction_clean_jobq, enew) == mtev_false) {
+    eventer_free(enew);
+  }
 
   /* retrigger myself in N seconds */
   struct timeval tvnew;
   mtev_gettimeofday(&tvnew, NULL);
-  tvnew.tv_sec += 10;
+  tvnew.tv_sec += 3;
   eventer_add_at(trigger_transaction_cleanup, closure, tvnew);
   return 0;
 }
@@ -307,11 +309,13 @@ trigger_transaction_cleanup(eventer_t e, int mask, void *closure, struct timeval
 static int
 maintenance_function(eventer_t e, int mask, void *closure, struct timeval *tv)
 {
-  mtev_hash_table *thresholds = (mtev_hash_table *)closure;
+  mtev_hash_table *thresholds = &threshold_hash;
+  mtev_hash_table *flushes = &flushes_hash;
   switch(mask) {
     case EVENTER_ASYNCH_WORK: {
 
       threshold_fetch_hook_invoke(thresholds);
+      metric_flush_frequency_fetch_hook_invoke(flushes);
 
       send_infra_metrics(infra_dest_url, global_stats_recorder);
 
@@ -354,6 +358,21 @@ uint64_t get_jaeger_threshold_us(const char *service_name)
   return default_jaeger_threshold_us;
 }
 
+uint64_t get_metric_flush_frequency_ms(const char *service_name)
+{
+  if (service_name != NULL) {
+    const char *data = NULL;
+    if (mtev_hash_retr_str(&flushes_hash, service_name, strlen(service_name), &data)) {
+      uint64_t x = strtoull(data, NULL, 10);
+      return x;
+    } else if (mtev_hash_retr_str(&flushes_hash, "default", strlen("default"), &data)) {
+      uint64_t x = strtoull(data, NULL, 10);
+      return x;
+    }
+  }
+  return default_metric_flush_freq_ms;
+}
+
 static int
 trigger_maintenance(eventer_t e, int mask, void *closure, struct timeval *tv)
 {
@@ -387,9 +406,24 @@ tm_init()
   metric_flush_jobq = eventer_jobq_create("tm_metric_flush_jobq");
   eventer_jobq_set_min_max(metric_flush_jobq, 1, 4);
   transaction_clean_jobq = eventer_jobq_create("tm_transaction_clean_jobq");
+  eventer_jobq_set_max_backlog(transaction_clean_jobq, 2);
   maintenance_jobq = eventer_jobq_create("tm_maintenance_jobq");
-  visuals_jobq = eventer_jobq_create("tm_visuals_jobq");
   mtev_hash_init_locks(&threshold_hash, 200, MTEV_HASH_LOCK_MODE_MUTEX);
+  mtev_hash_init_locks(&flushes_hash, 200, MTEV_HASH_LOCK_MODE_MUTEX);
+
+  /* invoke the flush frequency hook to load any services that have non-default flush frequency 
+   * 
+   * We need to do this early so we don't use an incorrect frequency for a service before the real
+   * frequency is loaded
+   */
+  metric_flush_frequency_fetch_hook_invoke(&flushes_hash);
+
+  visuals_jobq = NULL;
+  mtev_boolean _tm_create_visuals = mtev_false;
+  mtev_conf_get_boolean(MTEV_CONF_ROOT, "/tm/create_visuals", &_tm_create_visuals);
+  if (_tm_create_visuals) {
+    visuals_jobq = eventer_jobq_create("tm_visuals_jobq");
+  }
 
   /* init the transaction store */
   char *tdb_path = "/tracemate/data/ts";
@@ -517,8 +551,16 @@ tm_init()
     stats_handle_add_tag(all_stats[i]->message_process_latency, "partition", part);
     stats_handle_add_tag(all_stats[i]->message_process_latency, "topic", topic);
 
-    all_stats[i]->kafka_read_jobq = eventer_jobq_create(topic);
-
+    char read_jobq_name[256];
+    snprintf(read_jobq_name, sizeof(read_jobq_name) - 1, "%s-%s", part, topic);
+    all_stats[i]->kafka_read_jobq = eventer_jobq_create(read_jobq_name);
+    char process_jobq_name[256];
+    snprintf(process_jobq_name, sizeof(process_jobq_name) - 1, "%s-process", topic);
+    all_stats[i]->kafka_process_jobq = eventer_jobq_create(process_jobq_name);
+    // don't allow more than 1000 unprocessed messages
+    eventer_jobq_set_max_backlog(all_stats[i]->kafka_process_jobq, 1000);
+    eventer_jobq_set_min_max(all_stats[i]->kafka_process_jobq, 1, 4);
+    eventer_jobq_set_concurrency(all_stats[i]->kafka_process_jobq, 4);
     if (all_stats[i]->read_delay_ms == 0) {
       /*
        * trigger a read job in the read jobq for each topic
@@ -662,7 +704,7 @@ tm_init()
    * to create a continuous loop
    */
   tv.tv_sec += 1;
-  eventer_add_at(trigger_maintenance, &threshold_hash, tv);
+  eventer_add_at(trigger_maintenance, NULL, tv);
 
   /*
    * trigger a periodic dashboard creation job
@@ -673,9 +715,10 @@ tm_init()
    * This job will retrigger when it's done
    * to create a continuous loop
    */
-  tv.tv_sec += 10;
-  eventer_add_at(trigger_visuals, get_all_team_data(), tv);
-
+  if (_tm_create_visuals) {
+    tv.tv_sec += 10;
+    eventer_add_at(trigger_visuals, get_all_team_data(), tv);
+  }
 }
 
 static ssize_t json_response_write(void *cl, const char *json, size_t s)

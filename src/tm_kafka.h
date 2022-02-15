@@ -17,13 +17,17 @@
 #ifndef TM_KAFKA_H
 #define TM_KAFKA_H
 
-#include "tm_utils.h"
-
 #include <mtev_hooks.h>
 #include <mtev_json_object.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+#include "tm_utils.h"
 #include <rdkafka.h>
 #include <stdbool.h>
 #include <stdint.h>
+
 
 typedef struct tm_kafka tm_kafka_t;
 typedef struct tm_kafka_topic tm_kafka_topic_t;
@@ -50,5 +54,9 @@ bool tm_kafka_stop_consume(tm_kafka_topic_t *t);
 
 /* returns largest offset from the batch */
 uint64_t tm_kafka_consume_messages(topic_stats_t *t);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

@@ -325,11 +325,11 @@ tm_circonus_init(const char *path)
     return false;
   }
 
+  journal_path = strdup(path);
   /* spawn the sender thread */
   if (pthread_create(&sender_thread, NULL, send_thread, NULL) != 0) {
     return false;
   }
-  journal_path = strdup(path);
   return true;
 }
 

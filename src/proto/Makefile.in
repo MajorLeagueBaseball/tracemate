@@ -67,12 +67,33 @@ MODDIR=modules
 
 HEADERS=
 
-PROTO_FILES=jaeger.proto collector.proto annotations.proto client.proto status.proto http.proto trace.proto tracing.proto pubsub.proto
+PROTO_FILES=jaeger.proto collector.proto annotations.proto client.proto status.proto http.proto trace.proto tracing.proto pubsub.proto \
+  opentelemetry/proto/common/v1/common.proto \
+  opentelemetry/proto/resource/v1/resource.proto \
+  opentelemetry/proto/trace/v1/trace.proto \
+  opentelemetry/proto/metrics/v1/metrics.proto \
+  opentelemetry/proto/collector/trace/v1/trace_service.proto \
+  opentelemetry/proto/collector/metrics/v1/metrics_service.proto 
+
 PROTO_RESULTS=jaeger.pb.cc collector.pb.cc collector.grpc.pb.cc annotations.pb.cc client.pb.cc status.pb.cc http.pb.cc \
-  trace.pb.cc tracing.pb.cc tracing.grpc.pb.cc pubsub.pb.cc pubsub.grpc.pb.cc
+  trace.pb.cc tracing.pb.cc tracing.grpc.pb.cc pubsub.pb.cc pubsub.grpc.pb.cc \
+  opentelemetry/proto/common/v1/common.pb.cc \
+  opentelemetry/proto/resource/v1/resource.pb.cc \
+  opentelemetry/proto/trace/v1/trace.pb.cc \
+  opentelemetry/proto/trace/v1/trace.pb.cc \
+  opentelemetry/proto/metrics/v1/metrics.pb.cc \
+  opentelemetry/proto/collector/trace/v1/trace_service.pb.cc \
+  opentelemetry/proto/collector/metrics/v1/metrics_service.pb.cc
+
 
 PROTO_OBJS=jaeger.pb.o collector.pb.o collector.grpc.pb.o http.pb.o annotations.pb.o client.pb.o status.pb.o \
-	trace.pb.o tracing.pb.o tracing.grpc.pb.o pubsub.pb.o pubsub.grpc.pb.o 
+	trace.pb.o tracing.pb.o tracing.grpc.pb.o pubsub.pb.o pubsub.grpc.pb.o \
+  opentelemetry/proto/common/v1/common.pb.o \
+  opentelemetry/proto/resource/v1/resource.pb.o \
+  opentelemetry/proto/trace/v1/trace.pb.o \
+  opentelemetry/proto/metrics/v1/metrics.pb.o \
+  opentelemetry/proto/collector/trace/v1/trace_service.pb.o \
+  opentelemetry/proto/collector/metrics/v1/metrics_service.pb.o
 
 .PHONY:	all
 
@@ -88,10 +109,12 @@ compile: $(PROTO_OBJS)
 
 %.pb.o: %.pb.cc
 	$(Q)echo "- compiling $<" ; \
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fPIC -c $<
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fPIC -c $< -o $@
 
 clean:
-	rm -f *.hlo *.lo *.o *.pb.*
+	rm -f *.hlo *.lo && \
+	find . -name "*.o" -delete && \
+	find . -name "*.pb.*" -delete
 
 distclean:	clean
 	rm -f Makefile

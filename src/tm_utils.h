@@ -32,6 +32,7 @@ typedef struct tm_kafka_topic tm_kafka_topic_t;
 typedef struct topic_stats {
   tm_kafka_topic_t *topic;
   eventer_jobq_t *kafka_read_jobq;
+  eventer_jobq_t *kafka_process_jobq;
   stats_handle_t *messages_seen;
   stats_handle_t *messages_filtered;
   stats_handle_t *messages_processed;
@@ -51,19 +52,19 @@ typedef struct topic_stats {
 
 typedef struct team_data team_data_t;
 
-static inline uint64_t floor_timestamp(const uint64_t ms)
+static inline uint64_t floor_timestamp(const uint64_t ms, const uint64_t flush_freq_ms)
 {
-  return ms - (ms % 60000);
+  return ms - (ms % flush_freq_ms);
 }
 
-static inline uint64_t center_timestamp(const uint64_t ms)
+static inline uint64_t center_timestamp(const uint64_t ms, const uint64_t flush_freq_ms)
 {
-  return floor_timestamp(ms) + 30000;
+  return floor_timestamp(ms, flush_freq_ms) + (flush_freq_ms / 2);
 }
 
-static inline uint64_t ceil_timestamp(const uint64_t ms)
+static inline uint64_t ceil_timestamp(const uint64_t ms, const uint64_t flush_freq_ms)
 {
-  return floor_timestamp(ms) + 59999; // stick it in the last ms of the minute
+  return floor_timestamp(ms, flush_freq_ms) + (flush_freq_ms - 1); // stick it in the last ms of the frequency
 }
 
 static inline uint64_t parse_timestamp(const char *ts)
@@ -98,11 +99,13 @@ tm_kafka_topic_t *get_error_producer_topic();
 tm_kafka_topic_t *get_transaction_producer_topic();
 
 uint64_t get_jaeger_threshold_us(const char *service_name);
+uint64_t get_metric_flush_frequency_ms(const char *service_name);
 
 void init_path_regex(tm_kafka_topic_t *url_topic);
 
 char *get_oauth2_token(const char *private_key_id, const char *private_key,
-                             const char *service_account, const char *scope, const char *aud);
+                       const char *service_account, const char *scope, const char *aud,
+                       uint64_t* expires_epoch_ms);
 
 char *tm_replace_vars(const char *source, mtev_hash_table *values);
 

@@ -43,5 +43,26 @@ MTEV_HOOK_PROTO(trace_transaction, (mtev_json_object *message),
 MTEV_HOOK_PROTO(threshold_fetch, (mtev_hash_table *thresholds),
                 void *, closure, (void *closure, mtev_hash_table *thresholds));
 
+/**
+ * Called by the maintenance jobq every 60 seconds.  This can be used to look up metric flush frequency times
+ * in milliseconds in some external systems.  @MLB uses this to lookup thresholds in consul.
+ *
+ * Hash table should be filled with:
+ *   Key is the full service name, e.g.: `bdata-statsapi-gaming-prod-us-east-4`
+ *   Value is a string which contains the frequency (in milliseconds as a string) all generated metrics are aggregated
+ *     for before sending to Circonus.. A freq of 30000 would mean that any sythesized metrics are flushed to circonus
+ *     after 30 seconds of aggregation.
+ *
+ * You can use a special key: 'default' to indicate the default frequency for any service that is not otherwise
+ * configured.
+ *
+ * Out of the box you can configure threshold times using the configuration file of the application, but sometimes
+ * you want fine control over these thresholds while the app is running without having to perform a configuration
+ * deployment.  This lets you write some code to lookup (or programmatically determine) the thresholds for each
+ * service at runtime.
+ */
+MTEV_HOOK_PROTO(metric_flush_frequency_fetch, (mtev_hash_table *flushes),
+                void *, closure, (void *closure, mtev_hash_table *flushes));
+
 
 #endif

@@ -24,11 +24,15 @@ WORKDIR /tracemate
 ARG EXTRA_CFLAGS=""
 ENV EXTRA_CFLAGS=$EXTRA_CFLAGS
 
-RUN autoreconf -i && \
+RUN yum update -y circonus-platform-library-libmtev
+RUN yum install -y centos-release-scl
+RUN yum install -y devtoolset-7
+
+RUN source scl_source enable devtoolset-7 && autoreconf -i && \
   PATH=$PATH:/usr/local/bin:/opt/circonus/bin:/usr/bin \
   LDFLAGS="-L/opt/circonus/lib -L/usr/lib64/ -L/usr/local/lib" \
   CFLAGS="-I/usr/local/lib -I/opt/circonus/include -I/usr/include/librdkafka -O2 -ggdb $EXTRA_CFLAGS" \
-  CXXFLAGS="-I/usr/local/lib -I/opt/circonus/include -I/usr/include/librdkafka -O2 -ggdb -std=c++11 $EXTRA_CFLAGS" \
+  CXXFLAGS="-I/usr/local/lib -I/opt/circonus/include -I/usr/include/librdkafka -O2 -ggdb -std=c++1z $EXTRA_CFLAGS" \
   ./configure && \
   make clean && \
   make

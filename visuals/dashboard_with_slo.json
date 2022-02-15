@@ -220,7 +220,7 @@
       "widget_id": "w0",
       "origin": "a6",
       "settings": {
-        "markup": "<p>All latency times are in milliseconds</p>\n<ul>\n<li>\n<a target=\"_blank\" href=\"http://bdata.jaeger.shared.mlbinfra.net/search?limit=200&lookback=2h&service={{ service_name }}\">Jaeger search the trailing 2 hours (limit 200)</a>\n</li>\n<li>\n<a target=\"_blank\" href=\"http://bdata.jaeger.shared.mlbinfra.net/search?limit=200&lookback=2d&service={{ service_name }}\">Jaeger search the trailing 2 days (limit 200)</a>\n</li>\n<li>\n<a target=\"_blank\" href=\"http://bdata.jaeger.shared.mlbinfra.net/search?limit=200&lookback=2w&service={{ service_name }}\">Jaeger search the trailing 2 weeks (limit 200)</a>\n</li>\n</ul>",
+        "markup": "<p>All latency times are in milliseconds</p>\n<ul>\n<li>\n<a target=\"_blank\" href=\"http://{{ team }}.jaeger.shared.mlbinfra.net/search?limit=200&lookback=2h&service={{ service_name }}\">Jaeger search the trailing 2 hours (limit 200)</a>\n</li>\n<li>\n<a target=\"_blank\" href=\"http://{{ team }}.jaeger.shared.mlbinfra.net/search?limit=200&lookback=2d&service={{ service_name }}\">Jaeger search the trailing 2 days (limit 200)</a>\n</li>\n<li>\n<a target=\"_blank\" href=\"http://{{ team }}.jaeger.shared.mlbinfra.net/search?limit=200&lookback=2w&service={{ service_name }}\">Jaeger search the trailing 2 weeks (limit 200)</a>\n</li>\n</ul>",
         "title": ""
       },
       "active": true,

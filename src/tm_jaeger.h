@@ -21,14 +21,13 @@
 extern "C" {
 #endif
 
-#include "tm_kafka.h"
-
 #include <stdint.h>
 #include <mtev_json_object.h>
+#include "tm_kafka.h"
 
-void jaegerize_transaction(mtev_json_object *o, const char *jaeger_url);
-void jaegerize_span(mtev_json_object *o, const char *jaeger_url);
-void jaegerize_error(mtev_json_object *o, const char *jaeger_url);
+
+void jaegerize_transaction(mtev_json_object *o, const char *jaeger_url, mtev_hash_table *span_errors);
+void jaegerize_span(mtev_json_object *o, const char *jaeger_url, mtev_hash_table *span_errors);
 
 #ifdef __cplusplus
 }

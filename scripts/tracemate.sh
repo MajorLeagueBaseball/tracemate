@@ -24,5 +24,5 @@ popd > /dev/null
 
 # now run the actual app
 export MTEV_DIAGNOSE_CRASH=1
-./tm -c /tracemate/tm.conf -D -D
+./tm -c /tracemate/tm.conf -D # run in the foreground and let k8s crash management deal with it
 

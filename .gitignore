@@ -51,6 +51,10 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
+# Protobuf files
+*.pb.cc
+*.pb.h
+
 # Others
 src/Makefile.dep
 src/scratch

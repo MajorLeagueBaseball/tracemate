@@ -87,13 +87,19 @@ HEADERS=
 
 TM_OBJS=main.o tm_circonus.o tm_hooks.o tm_kafka.o tm_process_metric.o \
 	tm_process_transaction.o tm_process_error.o tm_process_aggregate.o \
-	tm_process_span.o tm_process.o tm_metric.o tm_utils.o tm_jaeger.o \
+	tm_process_elastic_span.o tm_process.o tm_metric.o tm_utils.o tm_jaeger.o \
 	tm_transaction_store.o tm_url_squasher.o tm_process_url.o tm_process_regex.o \
-	tm_visuals.o bloom/bloom.o 
+	tm_visuals.o bloom/bloom.o tm_process_otel_span.o
 
 FINAL_TM_OBJS=$(TM_OBJS:%.o=tm-objs/%.o)
 
-TM_PROTO_OBJS=proto/jaeger.pb.o proto/collector.pb.o proto/collector.grpc.pb.o
+TM_PROTO_OBJS=proto/jaeger.pb.o proto/collector.pb.o proto/collector.grpc.pb.o \
+  proto/opentelemetry/proto/trace/v1/trace.pb.o \
+  proto/opentelemetry/proto/metrics/v1/metrics.pb.o \
+  proto/opentelemetry/proto/common/v1/common.pb.o \
+  proto/opentelemetry/proto/resource/v1/resource.pb.o \
+  proto/opentelemetry/proto/collector/trace/v1/trace_service.pb.o \
+  proto/opentelemetry/proto/collector/metrics/v1/metrics_service.pb.o 
 
 tm-objs/%.o:	%.o
 	$(Q)mkdir -p "`dirname $@`"
@@ -120,7 +126,7 @@ tm.env:	tm_version.h tm_config.h
 
 tm: $(FINAL_TM_OBJS) modules
 	@echo "- linking $@"
-	$(Q)$(CC) $(CLINKFLAGS) -o $@ $(FINAL_TM_OBJS) $(TM_PROTO_OBJS) \
+	$(CC) $(CLINKFLAGS) -o $@ $(FINAL_TM_OBJS) $(TM_PROTO_OBJS) \
 		$(LDFLAGS) \
 		$(MAPFLAGS) \
 		$(LIBS) -L. -lmtev
@@ -153,6 +159,14 @@ tm: $(FINAL_TM_OBJS) modules
 	fi
 
 .cpp.o:
+	$(Q)if [ "`dirname $@`" != "." ] ; then \
+		(cd "`dirname $@`" && $(MAKE) "`basename $@`") ; \
+	else \
+		echo "- compiling $<" ; \
+		$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< ; \
+	fi
+
+.cc.o:
 	$(Q)if [ "`dirname $@`" != "." ] ; then \
 		(cd "`dirname $@`" && $(MAKE) "`basename $@`") ; \
 	else \

@@ -51,6 +51,10 @@ static tm_kafka_topic_t *publish_url_topic = NULL;
 bool is_path_ok(const char *str, team_data_t *td)
 {
   /* we must URL decode in case there are %NN code in the string */
+  if (str == NULL) {
+    return true;
+  }
+
   int out_len = 0;
   CURL *curl = curl_easy_init();
   char *decoded = curl_easy_unescape(curl, str, 0, &out_len);
@@ -219,8 +223,6 @@ char *genericize_path(const char *service_name, const char *str, team_data_t *td
 
   if (str == NULL) return strdup("/");
 
-  send_url_to_kafka(service_name, str, td);
-
   size_t len = 0;
   CURL *curl = curl_easy_init();
   char *decoded = curl_easy_unescape(curl, str, 0, (int *)&len);
@@ -278,6 +280,10 @@ char *genericize_path(const char *service_name, const char *str, team_data_t *td
   if (squash) {
     if (apply_path_squasher(service_name, td, copy, &len)) {
       squash = false;
+    } else {
+      // If this URL is not already covered by a regex, we should publish it
+      // so that we can generate new regex based on this url.
+      send_url_to_kafka(service_name, str, td);
     }
   }
   if (squash && chopper) {
@@ -468,7 +474,9 @@ create_signed_jwt(const char *private_key_id, const char *private_key, const cha
 }
 
 char *
-get_oauth2_token(const char *private_key_id, const char *private_key, const char *service_account, const char *scope, const char *aud)
+get_oauth2_token(const char *private_key_id, const char *private_key, 
+                 const char *service_account, const char *scope, const char *aud,
+                 uint64_t *expires_epoch_ms)
 {
   char *access_token = NULL;
   /* ensure the table exists */
@@ -485,7 +493,7 @@ get_oauth2_token(const char *private_key_id, const char *private_key, const char
   size_t auth_fields_len = snprintf(NULL, 0, "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=%s", jwt);
   char *auth_fields = (char *)malloc(auth_fields_len + 1);
   auth_fields_len = snprintf(auth_fields, auth_fields_len + 1, "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=%s", jwt);
-  mtevL(mtev_debug, "POSTFIELDS: %.*s\n", (int)auth_fields_len, auth_fields);
+  //mtevL(mtev_debug, "POSTFIELDS: %.*s\n", (int)auth_fields_len, auth_fields);
   /* get the access token if it has expired */
   curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 10000L);
   curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
@@ -514,6 +522,10 @@ get_oauth2_token(const char *private_key_id, const char *private_key, const char
     mtev_json_tokener_free(tok);
 
     access_token = strdup(mtev_json_object_get_string(mtev_json_object_object_get(json, "access_token")));
+    if (expires_epoch_ms != NULL) {
+      int secs = mtev_json_object_get_int(mtev_json_object_object_get(json, "expires_in"));
+      *expires_epoch_ms = mtev_now_ms() + ((uint64_t)secs * 1000);
+    }
     mtev_dyn_buffer_destroy(&response_buffer);
     mtev_dyn_buffer_destroy(&header_buffer);
     mtev_json_object_put(json);

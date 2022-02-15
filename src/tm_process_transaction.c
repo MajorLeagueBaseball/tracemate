@@ -16,6 +16,7 @@
 
 #include <stdint.h>
 #include <mtev_json_object.h>
+#include <mtev_b64.h>
 
 #include "tm_hooks.h"
 #include "tm_log.h"
@@ -47,6 +48,34 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
   char *clean_path = NULL;
   uint64_t timestamp;
   mtev_hash_table *team_metrics = pre_process(message, team, tag_string, &timestamp);
+  /**
+   * IMPORTANT!
+   *
+   * The inbound timestamp on an elastic APM transaction document is when the transaction *started*
+   * If we record the generated metric data at this timestamp it's misleading and can lead to backfill
+   * issues due to aggregation.
+   *
+   * Consider:
+   *
+   * A transaction starts at time (t0) and has a duration of 10 minutes ending at t0+10M (t1).  When the transaction completes
+   * at t1 we can record the metrics about that transaction (latency, request count).. If we record the metrics at t0 it creates
+   * a difficult aggregation issue.  We are aggregating and spitting out metrics from tracemate every minute.  So for all of the
+   * requests that start and finish in the minute at t0 we record a total latency.  Then, 10 minutes later, our example
+   * request completes at t1.  We have already jettisoned the metrics for t0, to go back and calculate them correctly
+   * we would need all that original data at t0.  This is compounded by an unknown potential transaction duration of any limit
+   * (i.e. longer than 10 minutes).  The only recourse is to either drop the transaction at t1 (bad), or overwrite the data
+   * at t0 with what we know now (also bad since it's incomplete).
+   *
+   * To combat this we:
+   *
+   * - Record the metrics at the end of the transaction.  In our example above it would mean that the transaction that started
+   * at t0 and ran for 10 minutes would get recorded at t1, not at t0.
+   *
+   * This is consistent with how logging works.  A load balancer doesn't log out the record until the request ends so it can log the latency.
+   *
+   * To be most accurate we add the duration to t0 and then for aggregation we center that timestamp within in the minute.
+   */
+  uint64_t metric_timestamp = timestamp;
   team_data_t *td = get_team_data(team);
 
   if (!build_agg_tag_string(message, team, agg_tag_string)) {
@@ -70,6 +99,8 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
   }
 
   uint64_t duration_us = mtev_json_object_get_uint64(mtev_json_object_object_get(duration, "us"));
+  metric_timestamp += (duration_us / 1000);
+
   RETURN_IF_MISSING(trace_json, message, "trace");
   RETURN_IF_MISSING(trace_id_json, trace_json, "id");
   const char *trace_id = mtev_json_object_get_string(trace_id_json);
@@ -80,6 +111,8 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
     stats_add64(stats->messages_errored, 1);
     return false;
   }
+
+  uint64_t metric_flush_freq_ms = get_metric_flush_frequency_ms(service_string);
 
   mtevL(tm_debug, "TRANSACTION for: %s\n\n%s", service_string, mtev_json_object_to_json_string(message));
 
@@ -101,7 +134,7 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
     }
 
     /* build aggregate metrics, this replaces host specific info with `all` */
-    uint64_t agg_timestamp = ceil_timestamp(timestamp);
+    uint64_t agg_timestamp = center_timestamp(metric_timestamp, metric_flush_freq_ms);
     const char *name = mtev_json_object_get_string(mtev_json_object_object_get(trans, "name"));
 
     /* average latency for this service and transaction name */
@@ -139,7 +172,7 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
     }
 
     /* build aggregate metrics, this replaces host specific info with `all` */
-    uint64_t agg_timestamp = ceil_timestamp(timestamp);
+    uint64_t agg_timestamp = center_timestamp(metric_timestamp, metric_flush_freq_ms);
     const char *name = mtev_json_object_get_string(mtev_json_object_object_get(trans, "name"));
 
     /* average latency for this service and URL */
@@ -221,6 +254,7 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
     }
     mtev_json_object *status_code = mtev_json_object_object_get(resp, "status_code");
     mtev_json_object *method = mtev_json_object_object_get(req, "method");
+    mtev_json_object *request_headers = mtev_json_object_object_get(req, "headers");
     mtev_json_object *url = NULL;
     mtev_json_object *path = NULL;
     if (mv == 6) {
@@ -230,6 +264,41 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
       url = mtev_json_object_object_get(message, "url");
       path = mtev_json_object_object_get(url, "path");
     }
+
+
+    // User-Agent Code
+    char *user_agent = NULL;
+
+    // Check if User-Agent is set on the request. If so create metric that is not rolled up - i.e. expires after 4 weeks
+    if (request_headers != NULL) {
+      mtev_json_object *request_user_agent_obj = mtev_json_object_object_get(request_headers, "User-Agent");
+      if (request_user_agent_obj != NULL) {
+
+        mtev_json_object *request_user_agent = mtev_json_object_array_get_idx(request_user_agent_obj,0);
+        if (request_user_agent != NULL) {
+          const char *temp_user_agent = mtev_json_object_get_string(request_user_agent);
+          char *saveptr = NULL;
+          if (temp_user_agent != NULL) {
+
+            // Get the fist part of the UA (split by space)
+            const char *temp = strtok_r((char *)temp_user_agent, " ", &saveptr);
+            if (temp == NULL || strlen(temp) == 0) {
+              temp = "Other";
+            }
+
+            // Bas64 encode User_agent
+            size_t buff_len = mtev_b64_encode_len(strlen(temp)) + 1; // leave space for NUL pointer at end in case whole buffer is used.
+            char *buff = (char *)malloc(buff_len);
+
+            int encoded_len = mtev_b64_encode((const unsigned char *)temp, strlen(temp), buff, buff_len); // base64 encode temp into buff
+            buff[encoded_len] = '\0';
+            user_agent = buff; // Set user_agent to be the base64 encoded string
+            // printf("%s - %zu - %s - %s\n", temp, buff_len, buff, user_agent); // This is just here for debug
+          }
+        }
+      }
+    }
+    // End User-Agent Code
 
     char METHOD[16] = {0};
     const char *meth = mtev_json_object_get_string(method);
@@ -258,7 +327,7 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
     /* remove any GUIDS or integers from the path to genericize it */
     clean_path = genericize_path(service_string, mtev_json_object_get_string(path), td);
 
-    uint64_t agg_timestamp = ceil_timestamp(timestamp);
+    uint64_t agg_timestamp = center_timestamp(metric_timestamp, metric_flush_freq_ms);
 
     /* average latency for this service and URL */
     snprintf(metric_name, sizeof(metric_name) - 1, "transaction - latency - %s|ST[%s,method:%s%s]",
@@ -292,6 +361,33 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
 
       update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
+
+      // Check if User-Agent is set on the request. If so create metric that is not rolled up - i.e. expires after 4 weeks
+      if (user_agent != NULL) {
+
+        /* client error count for the service and URL */
+        snprintf(metric_name, sizeof(metric_name) - 1, "transaction - client_error_count - %s|ST[%s,method:%s,user_agent:b\"%s\",__rollup:false]",
+                clean_path, agg_tag_string, METHOD, user_agent);
+
+        update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
+
+        snprintf(metric_name, sizeof(metric_name) - 1, "transaction - error_count - %s|ST[%s,method:%s,user_agent:b\"%s\",__rollup:false]",
+                clean_path, agg_tag_string, METHOD, user_agent);
+
+        update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
+
+        snprintf(metric_name, sizeof(metric_name) - 1, "transaction - client_error_count - all|ST[%s,method:%s,user_agent:b\"%s\",__rollup:false]",
+                agg_tag_string, METHOD, user_agent);
+
+        update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
+
+        snprintf(metric_name, sizeof(metric_name) - 1, "transaction - error_count - all|ST[%s,method:%s,user_agent:b\"%s\",__rollup:false]",
+                agg_tag_string, METHOD, user_agent);
+
+        update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
+
+      }
+
     }
     if (stat_code >= 500) {
 
@@ -315,6 +411,30 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
                agg_tag_string, METHOD);
 
       update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
+
+      // Check if User-Agent is set on the request. If so create metric that is not rolled up - i.e. expires after 4 weeks
+      if (user_agent != NULL) {
+        /* client error count for the service and URL */
+        snprintf(metric_name, sizeof(metric_name) - 1, "transaction - server_error_count - %s|ST[%s,method:%s,user_agent:b\"%s\",__rollup:false]",
+                clean_path, agg_tag_string, METHOD, user_agent);
+
+        update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
+
+        snprintf(metric_name, sizeof(metric_name) - 1, "transaction - error_count - %s|ST[%s,method:%s,user_agent:b\"%s\",__rollup:false]",
+                clean_path, agg_tag_string, METHOD, user_agent);
+
+        update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
+
+        snprintf(metric_name, sizeof(metric_name) - 1, "transaction - server_error_count - all|ST[%s,method:%s,user_agent:b\"%s\",__rollup:false]",
+                agg_tag_string, METHOD, user_agent);
+
+        update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
+
+        snprintf(metric_name, sizeof(metric_name) - 1, "transaction - error_count - all|ST[%s,method:%s,user_agent:b\"%s\",__rollup:false]",
+                agg_tag_string, METHOD, user_agent);
+
+        update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
+      }
     }
 
     /* request count for the service and URL */
@@ -326,12 +446,20 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
              agg_tag_string, METHOD);
     update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
+    // Check if User-Agent is set on the request. If so create metric that is not rolled up - i.e. expires after 4 weeks
+    if (user_agent != NULL) {
+      snprintf(metric_name, sizeof(metric_name) - 1, "transaction - request_count - all|ST[%s,method:%s,user_agent:b\"%s\",__rollup:false]",
+              agg_tag_string, METHOD, user_agent);
+      update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
+      free(user_agent);
+    }
+
     /* while we are here, we generate a text metric for the http response code from this transaction */
     if (td->collect_host_level_metrics) {
       snprintf(metric_name, sizeof(metric_name) - 1, "transaction - status_code - %s|ST[%s,method:%s%s]",
                clean_path, tag_string, METHOD,rollup);
       snprintf(sc, sizeof(sc), "%d", stat_code);
-      update_text(td, team_metrics, metric_name, sc, timestamp);
+      update_text(td, team_metrics, metric_name, sc, metric_timestamp);
 
       /* reuse metric_name for the latency metric name of this metric is the method and the clean_path */
       snprintf(metric_name, sizeof(metric_name) - 1, "transaction - latency - %s|ST[%s,method:%s%s]",
@@ -377,7 +505,7 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
       }
 
       /* build aggregate metrics, this replaces host specific info with `all` */
-      uint64_t agg_timestamp = ceil_timestamp(timestamp);
+      uint64_t agg_timestamp = center_timestamp(metric_timestamp, metric_flush_freq_ms);
 
       /* average latency for this service and URL */
       snprintf(metric_name, sizeof(metric_name) - 1, "transaction - latency - %s|ST[%s,method:GET%s]",
@@ -417,14 +545,18 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
    *
    * If this arrives without a parent.id, assume it is root trans and save under trace.id
    */
-  if (trace_transaction_hook_invoke(message) == MTEV_HOOK_ABORT) {
-    free(clean_path);
-    return false;
+  if (stats->kafka_lag < 50000) {
+    if (trace_transaction_hook_invoke(message) == MTEV_HOOK_ABORT) {
+      free(clean_path);
+      return false;
+    }
   }
 
   mtev_json_object *parent = mtev_json_object_object_get(message, "parent");
   if (parent) {
-    tm_transaction_store_add_child(trace_id, strlen(trace_id), message, ttl);
+    if (stats->kafka_lag < 50000) {
+      tm_transaction_store_add_child(trace_id, strlen(trace_id), message, ttl);
+    }
   } else {
     uint64_t threshold_us = get_jaeger_threshold_us(service_string);
     if (duration_us >= threshold_us) {
@@ -446,7 +578,9 @@ bool process_transaction_message(topic_stats_t *stats, mtev_json_object *message
     entry.last_modified_ms = mtev_now_ms();
     entry.data = apm_t;
 
-    tm_transaction_store_put(trace_id, strlen(trace_id), &entry, ttl);
+    if (stats->kafka_lag < 50000 || duration_us >= threshold_us) {
+      tm_transaction_store_put(trace_id, strlen(trace_id), &entry, ttl);
+    }
 
     mtev_json_object_put(entry.data);
   }

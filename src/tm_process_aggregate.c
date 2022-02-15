@@ -39,14 +39,22 @@ parse_key(const char *key, char *service_name, char *team)
 
   char *tag = NULL, *src = tags_copy, *save1 = NULL;
 
+  bool team_tag = false;
   while((tag = strtok_r(src, ",", &save1)) != NULL) {
     src = NULL;
     const char *service_start = strstr(tag, "service:");
     if (service_start) {
       strcpy(service_name, service_start + 8);
     }
+    const char *team_start = strstr(tag, "team:");
+    if (team_start) {
+      strcpy(team, team_start + 5);
+      team_tag = true;
+    }
   }
-  tm_get_team(service_name, team);
+  if (!team_tag) {
+    tm_get_team(service_name, team);
+  }
   return true;
 }
 

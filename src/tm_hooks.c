@@ -9,3 +9,5 @@ MTEV_HOOK_IMPL(trace_transaction, (mtev_json_object *message), void *, closure,
 MTEV_HOOK_IMPL(threshold_fetch, (mtev_hash_table *thresholds), void *, closure, 
                (void *closure, mtev_hash_table *thresholds), (closure, thresholds));
 
+MTEV_HOOK_IMPL(metric_flush_frequency_fetch, (mtev_hash_table *flushes), void *, closure, 
+               (void *closure, mtev_hash_table *flushes), (closure, flushes));

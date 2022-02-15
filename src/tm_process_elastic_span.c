@@ -133,6 +133,10 @@ bool process_span_message(topic_stats_t *stats, mtev_json_object *message, int t
   }
 
   uint64_t duration_us = mtev_json_object_get_uint64(mtev_json_object_object_get(dur, "us"));
+  /** 
+   * for explanation of the following calculation see the comment about this in tm_process_transaction.c
+   */
+  timestamp += (duration_us / 1000);
 
   /*
    *
@@ -167,12 +171,6 @@ bool process_span_message(topic_stats_t *stats, mtev_json_object *message, int t
    *                      {span.type}    {span.name}  {context.db.statement}
   */
 
-  mtev_json_object *trans = mtev_json_object_object_get(message, "transaction");
-  if (trans == NULL) {
-    mtevL(tm_error, "'span' event is malformed, no 'transaction' object\n");
-    return false;
-  }
-
   mtev_json_object *trace_json = mtev_json_object_object_get(message, "trace");
   if (trace_json == NULL) {
     mtevL(tm_error, "'span' event is malformed, no 'trace' object\n");
@@ -188,6 +186,13 @@ bool process_span_message(topic_stats_t *stats, mtev_json_object *message, int t
   mtev_json_object *type = mtev_json_object_object_get(span, "type");
 
   const char *service_string = tm_service_name(message);
+  if (service_string == NULL) {
+    mtevL(tm_error, "'span' event is malformed, service name missing\n");
+    stats_add64(stats->messages_errored, 1);
+    return false;
+  }
+
+  uint64_t metric_flush_freq_ms = get_metric_flush_frequency_ms(service_string);
 
   const char *t = mtev_json_object_get_string(type);
 
@@ -203,7 +208,7 @@ bool process_span_message(topic_stats_t *stats, mtev_json_object *message, int t
 
   if (strncmp(t, "db", 2) == 0) {
     const char *operation = mtev_json_object_get_string(mtev_json_object_object_get(span, "name"));
-    uint64_t agg_timestamp = ceil_timestamp(timestamp);
+    uint64_t agg_timestamp = center_timestamp(timestamp, metric_flush_freq_ms);
 
     /* aggregate for statement */
     snprintf(metric_name, sizeof(metric_name) - 1, "db - latency - %s|ST[%s%s]",
@@ -273,7 +278,7 @@ bool process_span_message(topic_stats_t *stats, mtev_json_object *message, int t
      */
     char *external_name = genericize_path(service_string, ex_name, td);
 
-    uint64_t agg_timestamp = ceil_timestamp(timestamp);
+    uint64_t agg_timestamp = center_timestamp(timestamp, metric_flush_freq_ms);
 
     /* aggregate for external */
     snprintf(metric_name, sizeof(metric_name) - 1, "external - latency - %s|ST[%s%s]",
@@ -302,6 +307,43 @@ bool process_span_message(topic_stats_t *stats, mtev_json_object *message, int t
     update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
 
     free(external_name);
+  }
+  else if (strcmp(t, "custom") == 0 || strcmp(t, "app") == 0) {
+
+    const char *span_name = mtev_json_object_get_string(mtev_json_object_object_get(span, "name"));
+
+    uint64_t agg_timestamp = center_timestamp(timestamp, metric_flush_freq_ms);
+
+    /* aggregate for internal */
+    snprintf(metric_name, sizeof(metric_name) - 1, "internal - latency - %s|ST[%s%s]",
+             span_name, agg_tag_string, rollup);
+    update_histogram(td, team_metrics, metric_name, true, duration_us, agg_timestamp);
+
+    /* aggregate for service */
+    snprintf(metric_name, sizeof(metric_name) - 1, "internal - latency - all|ST[%s]",
+             agg_tag_string);
+    update_histogram(td, team_metrics, metric_name, true, duration_us, agg_timestamp);
+
+    /* call counts */
+    snprintf(metric_name, sizeof(metric_name) - 1, "internal - call_count - %s|ST[%s%s]",
+             span_name, agg_tag_string, rollup);
+    update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
+
+    snprintf(metric_name, sizeof(metric_name) - 1, "internal - call_count - all|ST[%s]",
+             agg_tag_string);
+    update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
+
+    if (td->collect_host_level_metrics) {
+      /* host and statement specific */
+      snprintf(metric_name, sizeof(metric_name) - 1, "internal - latency - %s|ST[%s%s]",
+               span_name, tag_string, rollup);
+      update_histogram(td, team_metrics, metric_name, true, duration_us, agg_timestamp);
+
+      /* counts */
+      snprintf(metric_name, sizeof(metric_name) - 1, "intternal - call_count - %s|ST[%s%s]",
+               span_name, tag_string, rollup);
+      update_counter(td, team_metrics, metric_name, true, 1, agg_timestamp);
+    }
   }
   else {
     mtevL(tm_debug, "Unprocessed span type: %s\n", mtev_json_object_get_string(type));

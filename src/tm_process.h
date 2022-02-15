@@ -46,6 +46,22 @@ static inline int tm_apm_server_major_version(mtev_json_object *m)
   return atoi(vv);
 }
 
+static inline char* tm_apm_server_version(mtev_json_object *m)
+{
+  if (m == NULL) return NULL;
+
+  mtev_json_object *md = mtev_json_object_object_get(m, "@metadata");
+  if (md == NULL) return NULL;
+
+  mtev_json_object *version = mtev_json_object_object_get(md, "version");
+  if (version == NULL) return NULL;
+
+  const char *v = mtev_json_object_get_string(version);
+  if (strlen(v) < 1) return NULL;
+
+  return strdup(v);
+}
+
 static inline const char *tm_service_name(mtev_json_object *m)
 {
   int mv = tm_apm_server_major_version(m);
